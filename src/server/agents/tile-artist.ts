@@ -39,33 +39,6 @@ export function generateLevelTiles(style: RoomStyle): TileSet {
     })
   );
 
-  // Exit: open archway with highlight frame
-  const exit: TilePattern = Array.from({ length: 8 }, (_, r) =>
-    Array.from({ length: 8 }, (_, c) => {
-      // Arch frame
-      if (r === 0 && c >= 1 && c <= 6) return p.highlight;
-      if ((c === 1 || c === 6) && r >= 0 && r <= 7) return p.highlight;
-      if (r === 1 && (c === 2 || c === 5)) return adjust(p.highlight, -20);
-      // Interior: dark opening
-      if (c >= 2 && c <= 5) return p.shadow;
-      return p.wall;
-    })
-  );
-
-  // Exit locked: barred archway
-  const exit_locked: TilePattern = Array.from({ length: 8 }, (_, r) =>
-    Array.from({ length: 8 }, (_, c) => {
-      if (r === 0 && c >= 1 && c <= 6) return p.highlight;
-      if ((c === 1 || c === 6) && r >= 0 && r <= 7) return p.highlight;
-      // Vertical bars
-      if (c >= 2 && c <= 5 && (c === 2 || c === 4)) return p.accent;
-      // Horizontal bar
-      if (r === 4 && c >= 2 && c <= 5) return p.accent;
-      if (c >= 2 && c <= 5) return p.shadow;
-      return p.wall;
-    })
-  );
-
   // Object: floor tile with glowing accent marker
   const object: TilePattern = Array.from({ length: 8 }, (_, r) =>
     Array.from({ length: 8 }, (_, c) => {
@@ -121,5 +94,5 @@ export function generateLevelTiles(style: RoomStyle): TileSet {
     })
   );
 
-  return { wall, floor, exit, exit_locked, object, player, stairs_down, stairs_up };
+  return { wall, floor, object, player, stairs_down, stairs_up };
 }

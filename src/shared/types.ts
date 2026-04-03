@@ -6,8 +6,6 @@ export type TilePattern = string[][];
 export interface TileSet {
   wall: TilePattern;
   floor: TilePattern;
-  exit: TilePattern;
-  exit_locked: TilePattern;
   object: TilePattern;
   player: TilePattern;
   [key: string]: TilePattern;
@@ -28,7 +26,7 @@ export interface RoomStyle {
 
 // ---- Room Grid Layout ----
 
-export type CellType = "wall" | "floor" | "exit" | "exit_locked" | "object" | "stairs_down" | "stairs_up";
+export type CellType = "wall" | "floor" | "object" | "stairs_down" | "stairs_up";
 
 export interface GridEntity {
   id: string;

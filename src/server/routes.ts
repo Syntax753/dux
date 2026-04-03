@@ -8,14 +8,13 @@ import { responseCache, ResponseCache } from "./services/response-cache.js";
 import { generateRooms, type RoomGeneratorOutput } from "./agents/room-generator.js";
 import { planSpatialLayout } from "./agents/level-architect.js";
 import { generateLevelStyle } from "./agents/style-agent.js";
-import { designRoom } from "./agents/room-designer.js";
+import { designRoom, type RoomDesignOptions } from "./agents/room-designer.js";
 import { generateLevelTiles } from "./agents/tile-artist.js";
 import { narrate } from "./agents/narrator.js";
 import { getItemActions } from "./agents/item-agent.js";
 import { checkAction, advanceChain, moveRoom } from "./agents/tools.js";
 import { generateLevel, type GeneratedLevel } from "./agents/level-generator.js";
-import type { BSPResult } from "./services/bsp-generator.js";
-import type { CorridorResult } from "./services/corridor-builder.js";
+import type { DungeonGraph } from "./services/dungeon-graph.js";
 import type { ClientRoomData } from "../shared/types.js";
 import type { GameState } from "./models/game-state.js";
 import type { RoomDefinition } from "./models/level.js";
@@ -89,8 +88,12 @@ async function generateRoomLayout(
   const entities = roomData?.entities ?? [];
   const availableTiles = Object.keys(state.levelTileSet!);
 
-  const span = tracer?.startSpan("room-designer", `Grid layout for "${room.name}"`, parentSpanId, `Assembling a 16x16 grid for "${room.name}" using shared tile types [${availableTiles.join(", ")}]. Placing ${entities.length} entities, ${room.exits.length} exit(s), and architectural features.`);
-  const layout = await designRoom(room, roomData?.scene ?? "", entities, state.levelStyle!, availableTiles);
+  const isStartRoom = room.id === state.level.start_room;
+  const isFinalRoom = room.id === state.level.rooms[state.level.rooms.length - 1].id;
+  const options: RoomDesignOptions = { isStartRoom, isFinalRoom };
+
+  const span = tracer?.startSpan("room-designer", `Grid layout for "${room.name}"`, parentSpanId, `Assembling ${room.width}x${room.height} grid for "${room.name}". ${isStartRoom ? "START room — placing stairs_up." : isFinalRoom ? "FINAL room — placing stairs_down." : ""} Using tile types [${availableTiles.join(", ")}]. Placing ${entities.length} entities.`);
+  const layout = await designRoom(room, roomData?.scene ?? "", entities, state.levelStyle!, availableTiles, options);
   state.roomLayouts.set(room.id, layout);
   if (span) tracer!.endSpan(span.id, { width: layout.width, height: layout.height, entityCount: layout.entities.length });
 
@@ -151,9 +154,7 @@ routes.POST["/api/game/start"] = async (req, res) => {
   const body = (await readBody(req)) as { levelId?: string; roomCount?: number };
 
   let level;
-  let bsp: BSPResult | null = null;
-  let corridors: CorridorResult | null = null;
-  let placedRooms: import("./services/corridor-builder.js").PlacedRoom[] | null = null;
+  let graph: DungeonGraph | null = null;
   const tracer = new Tracer("game/start", body.levelId ? `Starting level "${body.levelId}"` : `Generating ${body.roomCount ?? 5}-room level`);
 
   if (body.levelId) {
@@ -161,22 +162,17 @@ routes.POST["/api/game/start"] = async (req, res) => {
     if (!level) { json(res, 404, { error: `Level "${body.levelId}" not found` }); return; }
   } else {
     const roomCount = Math.max(1, Math.min(50, body.roomCount ?? 5));
-    const bspSpan = tracer.startSpan("bsp-generator", `BSP partitioning ${roomCount} rooms`, undefined, `Binary Space Partitioning creates non-overlapping partitions. Rooms placed within partitions with random sizing. Instant, no LLM.`);
-    const corrSpan = tracer.startSpan("corridor-builder", `Connecting rooms with corridors`, undefined, `Corridor builder connects sibling rooms from BSP tree. L-shaped corridors with crossroads where paths overlap.`);
-    const genSpan = tracer.startSpan("level-generator", `Creative content for ${roomCount} rooms`, undefined, `LLM generates names, themes, puzzles for each BSP room.`);
+    const graphSpan = tracer.startSpan("dungeon-graph", `Building ${roomCount}-room dungeon graph`, undefined, `BSP partitioning → room placement → MST for guaranteed connectivity → corridor waypoints → validation. All instant, no LLM.`);
+    const genSpan = tracer.startSpan("level-generator", `Creative content for ${roomCount} rooms`, undefined, `LLM generates names, themes, puzzles for each room in the graph.`);
     try {
       const result = await generateLevel(roomCount);
       level = result.level;
-      bsp = result.bsp;
-      corridors = result.corridors;
-      placedRooms = result.placedRooms;
-      tracer.endSpan(bspSpan.id, { partitions: bsp.partitions.length, grid: `${bsp.totalWidth}x${bsp.totalHeight}` });
-      tracer.endSpan(corrSpan.id, { segments: corridors.segments.length, crossroads: corridors.crossroads.length });
+      graph = result.graph;
+      tracer.endSpan(graphSpan.id, { rooms: graph.rooms.length, edges: graph.edges.length, grid: `${graph.width}x${graph.height}` });
       tracer.endSpan(genSpan.id, { title: level.title, theme: level.theme, rooms: level.rooms.length });
     } catch (err) {
       tracer.errorSpan(genSpan.id, (err as Error).message);
-      tracer.errorSpan(corrSpan.id, (err as Error).message);
-      tracer.errorSpan(bspSpan.id, (err as Error).message);
+      tracer.errorSpan(graphSpan.id, (err as Error).message);
       json(res, 500, { error: "Failed to generate level", trace: tracer.finish() });
       return;
     }
@@ -191,36 +187,36 @@ routes.POST["/api/game/start"] = async (req, res) => {
     // These are independent — all only need the level definition
     const phase1Span = tracer.startSpan("phase-1", `Parallel: scenes + layout + style`, tracer.rootId, `Running 3 agents in parallel: room-generator (scenes/entities), level-architect (spatial positions), style-agent (color palette). All only need the level definition — no dependencies between them.`);
 
-    // Build spatial map from BSP + corridor data
-    const spatialMapPromise = (placedRooms && corridors)
+    // Build spatial map from dungeon graph
+    const spatialMapPromise = graph
       ? (async () => {
-          const span = tracer.startSpan("spatial-map", `Building spatial map from BSP + corridors`, phase1Span.id, `Room positions from BSP, corridor segments from corridor-builder. Instant.`);
+          const span = tracer.startSpan("spatial-map", `Building spatial map from dungeon graph`, phase1Span.id, `Room positions + corridor waypoints from validated graph. All rooms guaranteed connected.`);
+          // Convert graph edges with waypoints to corridor segments
+          const corridorSegments: import("../shared/types.js").CorridorSegmentData[] = [];
+          for (const edge of graph!.edges) {
+            const wp = edge.waypoints;
+            for (let i = 0; i < wp.length - 1; i++) {
+              const a = wp[i], b = wp[i + 1];
+              if (a.y === b.y) {
+                corridorSegments.push({ x1: Math.min(a.x, b.x), y1: a.y, x2: Math.max(a.x, b.x), y2: a.y, type: "horizontal" });
+              } else {
+                corridorSegments.push({ x1: a.x, y1: Math.min(a.y, b.y), x2: a.x, y2: Math.max(a.y, b.y), type: "vertical" });
+              }
+            }
+          }
           const result: import("../shared/types.js").LevelSpatialMap = {
-            rooms: placedRooms!.map((r) => ({ roomId: r.id, gridX: r.x, gridY: r.y })),
-            connections: bsp!.siblings.map((s) => {
-              const from = placedRooms!.find((r) => r.id === s.leftId)!;
-              const to = placedRooms!.find((r) => r.id === s.rightId)!;
+            rooms: graph!.rooms.map((r) => ({ roomId: r.id, gridX: r.x, gridY: r.y })),
+            connections: graph!.edges.map((e) => {
+              const from = graph!.rooms.find((r) => r.id === e.fromId)!;
+              const to = graph!.rooms.find((r) => r.id === e.toId)!;
               const dx = (to.x + to.width / 2) - (from.x + from.width / 2);
               const dy = (to.y + to.height / 2) - (from.y + from.height / 2);
               const direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "east" : "west") : (dy > 0 ? "south" : "north");
-              // Find the corridor segment connecting these rooms
-              const seg = corridors!.segments.find((seg) =>
-                (seg.x1 >= from.x && seg.x1 < from.x + from.width) ||
-                (seg.x1 >= to.x && seg.x1 < to.x + to.width)
-              );
-              return {
-                fromRoomId: s.leftId, toRoomId: s.rightId, direction,
-                fromX: from.x + Math.floor(from.width / 2),
-                fromY: from.y + Math.floor(from.height / 2),
-                toX: to.x + Math.floor(to.width / 2),
-                toY: to.y + Math.floor(to.height / 2),
-              };
+              return { fromRoomId: e.fromId, toRoomId: e.toId, direction };
             }),
-            corridorSegments: corridors!.segments.map((s) => ({
-              x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2, type: s.type,
-            })),
+            corridorSegments,
           };
-          tracer.endSpan(span.id, { rooms: result.rooms.length, segments: corridors!.segments.length });
+          tracer.endSpan(span.id, { rooms: result.rooms.length, corridors: corridorSegments.length });
           return result;
         })()
       : (async () => {

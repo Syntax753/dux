@@ -12,7 +12,6 @@ import { LevelGrid } from "./level-grid.js";
 export type MoveResult =
   | { type: "moved"; x: number; y: number }
   | { type: "blocked"; message: string; cached: boolean }
-  | { type: "blocked_exit"; direction: string; message: string; cached: boolean }
   | { type: "entered_room"; roomId: string; x: number; y: number } // walked into a new room
   | { type: "descend_stairs"; x: number; y: number }
   | { type: "ascend_stairs"; x: number; y: number }
@@ -58,6 +57,7 @@ export class PlayerManager {
   loadRoom(roomData: ClientRoomData, setAsCurrentRoom = true): void {
     this.roomDataCache.set(roomData.roomId, roomData);
     this.levelGrid.loadRoom(roomData.roomId, roomData.layout);
+    this.levelGrid.finalizeConnectivity(); // ensure corridors punch through room walls
     this.roomEntities.set(roomData.roomId, [...roomData.entities]);
 
     if (setAsCurrentRoom) {
@@ -117,13 +117,6 @@ export class PlayerManager {
 
     const cell = this.levelGrid.getCell(newX, newY);
 
-    // Locked exit
-    if (cell === "exit_locked") {
-      const bumpKey = `${newX}:${newY}:${direction}`;
-      const cached = this.bumpCache.has(bumpKey);
-      const message = this.getOrCreateBumpMessage(bumpKey, direction, "locked passage");
-      return { type: "blocked_exit", direction, message, cached };
-    }
 
     // Stairs
     if (cell === "stairs_down") {
@@ -151,25 +144,6 @@ export class PlayerManager {
     }
 
     return { type: "moved", x: newX, y: newY };
-  }
-
-  // --- Exit unlocking ---
-
-  unlockExit(roomId: string, direction: string): void {
-    const roomData = this.roomDataCache.get(roomId);
-    if (!roomData) return;
-    const exit = roomData.layout.exits.find((e) => e.direction === direction);
-    if (!exit) return;
-
-    const off = this.levelGrid.roomOffsets.get(roomId);
-    if (!off) return;
-
-    const gx = off.cellX + exit.x;
-    const gy = off.cellY + exit.y;
-    this.levelGrid.cells[gy][gx] = "exit";
-    exit.locked = false;
-    roomData.layout.cells[exit.y][exit.x] = this.levelGrid.cells[gy][gx];
-    this.clearBumpCache(gx, gy);
   }
 
   // --- Entity management ---

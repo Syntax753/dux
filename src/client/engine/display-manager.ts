@@ -38,6 +38,20 @@ export class DisplayManager {
     this.placedItems = [];
   }
 
+  getPlacedItems(): PlacedItem[] {
+    return this.placedItems;
+  }
+
+  // Find a placed decoration item adjacent to a position
+  findNearbyItem(x: number, y: number): PlacedItem | null {
+    const offsets = [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]];
+    for (const [dx, dy] of offsets) {
+      const item = this.placedItems.find((i) => i.x === x + dx && i.y === y + dy);
+      if (item) return item;
+    }
+    return null;
+  }
+
   addItem(item: PlacedItem): void {
     this.placedItems.push(item);
     // Register light source if the item emits light
@@ -123,11 +137,11 @@ export class DisplayManager {
         const sy = offsetY + row * CELL_PX;
 
         if (bright > 0.01) {
-          // Currently lit — draw with brightness level
+          // Currently lit by a light source — draw at actual brightness
           this.drawTileLit(ctx, pattern, sx, sy, bright);
         } else {
-          // Was revealed but currently dark — faint memory
-          this.drawTileLit(ctx, pattern, sx, sy, 0.08);
+          // Was revealed but no light source reaching here — very faint memory
+          this.drawTileLit(ctx, pattern, sx, sy, 0.03);
         }
       }
     }
@@ -161,7 +175,7 @@ export class DisplayManager {
 
       if (sx + CELL_PX < 0 || sx > this.canvasW || sy + CELL_PX < 0 || sy > this.canvasH) continue;
 
-      this.drawTileLit(ctx, pattern, sx, sy, bright > 0.01 ? bright : 0.08);
+      this.drawTileLit(ctx, pattern, sx, sy, bright > 0.01 ? bright : 0.03);
     }
   }
 

@@ -9,6 +9,7 @@ import { renderNarrativePanel } from "../ui/narrative-panel.js";
 import { renderInventoryPanel } from "../ui/inventory-panel.js";
 import { showRadialMenu, hideRadialMenu } from "../ui/radial-menu.js";
 import type { RoomLayout } from "../../shared/types.js";
+import { getItemType, getItemActions as getRegistryActions, getItemsByTheme } from "./item-registry.js";
 
 let canvas: HTMLCanvasElement;
 let ctx: CanvasRenderingContext2D;
@@ -74,6 +75,18 @@ function handleInput(): void {
   input.consumeEscape();
 
   if (input.consumeInteract() && state.screen === "playing") {
+    // Check for decoration items first (no server call needed)
+    const decoration = displayManager.findNearbyItem(playerManager.playerX, playerManager.playerY);
+    if (decoration) {
+      const itemType = getItemType(decoration.typeId);
+      if (itemType) {
+        dbg(C.interact, `▶ [interact] Player pressed E near decoration "${itemType.name}" — using registry verbs (no server call)`);
+        handleDecorationInteract(itemType.name, decoration.x, decoration.y, getRegistryActions(itemType));
+        return;
+      }
+    }
+
+    // Then check for server entities (puzzle items — need LLM)
     const entity = playerManager.getAdjacentEntity();
     if (entity) {
       dbg(C.interact, `▶ [interact] Player pressed E near "${entity.name}" at (${entity.x},${entity.y}) — requesting actions from item-agent`);
@@ -113,16 +126,6 @@ function handleInput(): void {
       }
       break;
 
-    case "blocked_exit":
-      if (result.cached) {
-        dbg(C.blockedCached, `⊘ [movement] Locked exit ${result.direction} (cached) — ${result.message}`);
-      } else {
-        dbg(C.blocked, `⊘ [movement] Locked exit ${result.direction} — ${result.message}`);
-        addNarrative(state, result.message);
-        renderNarrativePanel(state.narrativeLog);
-      }
-      break;
-
     case "descend_stairs": {
       const roomCount = displayManager.roomCount;
       dbg(C.transition, `▶ [movement] Descending stairs — next level: ${roomCount + 1} rooms`);
@@ -139,6 +142,39 @@ function handleInput(): void {
       if (onAscendCallback) onAscendCallback();
       break;
   }
+}
+
+// Handle interaction with a decoration item (from registry — no server call)
+function handleDecorationInteract(
+  name: string,
+  itemX: number,
+  itemY: number,
+  actions: Array<{ action: string; label: string; description: string; enabled: boolean }>
+): void {
+  const { sx, sy } = displayManager.cellToScreen(itemX, itemY);
+  const rect = canvas.getBoundingClientRect();
+
+  state.radialMenu = {
+    entityId: `deco_${itemX}_${itemY}`,
+    entityName: name,
+    actions,
+    screenX: rect.left + sx,
+    screenY: rect.top + sy,
+  };
+  state.screen = "radial-menu";
+
+  showRadialMenu(state.radialMenu, (action) => {
+    hideRadialMenu();
+    state.screen = "playing";
+    state.radialMenu = null;
+
+    const selected = actions.find((a) => a.action === action);
+    if (selected) {
+      dbg(C.action, `✓ [decoration] "${action}" on "${name}" — "${selected.description}"`);
+      addNarrative(state, selected.description);
+      renderNarrativePanel(state.narrativeLog);
+    }
+  });
 }
 
 async function handleInteract(entityId: string, roomId: string): Promise<void> {
@@ -191,12 +227,6 @@ async function handleInteract(entityId: string, roomId: string): Promise<void> {
           dbg(C.entity, `  → [entity] Removed "${removed}"`);
           playerManager.removeEntity(roomId, removed);
         }
-        if (actionRes.stateChanges.exitUnlocked) {
-          const dir = actionRes.stateChanges.exitUnlocked as string;
-          dbg(C.entity, `  → [exit] Unlocked ${dir}`);
-          playerManager.unlockExit(roomId, dir);
-        }
-
         renderNarrativePanel(state.narrativeLog);
         renderInventoryPanel(state.inventory);
       } catch (err) {
@@ -213,44 +243,76 @@ async function handleInteract(entityId: string, roomId: string): Promise<void> {
   }
 }
 
-// Place torches on wall-adjacent floor tiles in a room
-export function placeTorchesForRoom(roomId: string): void {
+// Place themed decoration items in a room (lights on walls + decorations on floor)
+export function decorateRoom(roomId: string, theme: string = "dungeon"): void {
   const off = playerManager.levelGrid.roomOffsets.get(roomId);
   if (!off) return;
 
   const grid = playerManager.levelGrid;
-  let placed = 0;
+  const themedItems = getItemsByTheme(theme);
+  const lightItems = themedItems.filter((i) => i.brightness > 0);
+  const decoItems = themedItems.filter((i) => i.brightness === 0 && !i.passable);
+
+  let wallAdjCount = 0;
+  let floorCount = 0;
+  let lightsPlaced = 0;
+  let decosPlaced = 0;
 
   for (let ly = 0; ly < off.height; ly++) {
     for (let lx = 0; lx < off.width; lx++) {
       const gx = off.cellX + lx;
       const gy = off.cellY + ly;
-      const cell = grid.getCell(gx, gy);
+      if (grid.getCell(gx, gy) !== "floor") continue;
 
-      // Only place on floor tiles
-      if (cell !== "floor" && cell !== "corridor") continue;
-
-      // Check if adjacent to a wall
       let adjacentWall = false;
       for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
-        if (grid.getCell(gx + dx, gy + dy) === "wall") {
-          adjacentWall = true;
-          break;
-        }
+        if (grid.getCell(gx + dx, gy + dy) === "wall") { adjacentWall = true; break; }
       }
-      if (!adjacentWall) continue;
 
-      // Place torches sparsely — every ~5 wall-adjacent tiles
-      if (placed % 5 === 0) {
-        displayManager.addItem({ typeId: "torch", x: gx, y: gy });
+      if (adjacentWall) {
+        if (wallAdjCount % 10 === 0 && lightItems.length > 0) {
+          const item = lightItems[lightsPlaced % lightItems.length];
+          displayManager.addItem({ typeId: item.id, x: gx, y: gy });
+          lightsPlaced++;
+        }
+        wallAdjCount++;
+      } else {
+        if (floorCount % 15 === 0 && decoItems.length > 0) {
+          const item = decoItems[decosPlaced % decoItems.length];
+          displayManager.addItem({ typeId: item.id, x: gx, y: gy });
+          decosPlaced++;
+        }
+        floorCount++;
       }
-      placed++;
     }
   }
 
-  if (placed > 0) {
-    dbg(C.entity, `  🔥 [lighting] Placed ${Math.floor(placed / 5)} torches in "${roomId}"`);
+  if (lightsPlaced + decosPlaced > 0) {
+    dbg(C.entity, `  🏰 [decorate] "${roomId}": ${lightsPlaced} lights + ${decosPlaced} decorations (theme: ${theme})`);
   }
+}
+
+// Light up corridors sparsely
+export function decorateCorridors(theme: string = "dungeon"): void {
+  const grid = playerManager.levelGrid;
+  const lightItems = getItemsByTheme(theme).filter((i) => i.brightness > 0);
+  if (lightItems.length === 0) return;
+
+  let placed = 0;
+  let count = 0;
+  for (let y = 0; y < grid.height; y++) {
+    for (let x = 0; x < grid.width; x++) {
+      if (grid.cells[y][x] === "corridor") {
+        if (count % 12 === 0) {
+          const item = lightItems[placed % lightItems.length];
+          displayManager.addItem({ typeId: item.id, x, y });
+          placed++;
+        }
+        count++;
+      }
+    }
+  }
+  if (placed > 0) dbg(C.entity, `  🔥 [decorate] ${placed} corridor lights (theme: ${theme})`);
 }
 
 function render(): void {

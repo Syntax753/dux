@@ -14,14 +14,12 @@ interface RoomOffset {
   height: number;
 }
 
-// Room sizes are stored here after level definition is parsed
 const roomSizes = new Map<string, { width: number; height: number }>();
 
 export function setRoomSize(roomId: string, width: number, height: number): void {
   roomSizes.set(roomId, { width, height });
 }
 
-// Unified level grid — rooms + corridors as one seamless grid.
 export class LevelGrid {
   width = 0;
   height = 0;
@@ -29,13 +27,9 @@ export class LevelGrid {
   roomOffsets = new Map<string, RoomOffset>();
   cellOwner: (string | null)[][] = [];
 
-  private minGX = 0;
-  private minGY = 0;
-
   init(spatialMap: LevelSpatialMap): void {
     const realRooms = spatialMap.rooms.filter((r) => r.roomId !== "exit");
 
-    // Find the extent — gridX/gridY are absolute cell positions from BSP
     let maxRight = 0, maxBottom = 0;
     for (const r of realRooms) {
       const size = roomSizes.get(r.roomId) ?? { width: 5, height: 5 };
@@ -46,7 +40,6 @@ export class LevelGrid {
     this.width = maxRight;
     this.height = maxBottom;
 
-    // Initialize with walls
     this.cells = Array.from({ length: this.height }, () =>
       Array.from({ length: this.width }, () => "wall" as CellType)
     );
@@ -54,7 +47,6 @@ export class LevelGrid {
       Array.from({ length: this.width }, () => null)
     );
 
-    // Room offsets come directly from BSP positions
     this.roomOffsets.clear();
     for (const r of realRooms) {
       const size = roomSizes.get(r.roomId) ?? { width: 5, height: 5 };
@@ -67,7 +59,7 @@ export class LevelGrid {
       });
     }
 
-    // Carve corridors from pre-computed segments if available
+    // Carve corridors
     if (spatialMap.corridorSegments && spatialMap.corridorSegments.length > 0) {
       for (const seg of spatialMap.corridorSegments) {
         if (seg.type === "horizontal") {
@@ -77,13 +69,8 @@ export class LevelGrid {
         }
       }
     } else {
-      // Fallback: L-shaped corridors from connection endpoints
       for (const conn of spatialMap.connections) {
-        if (conn.fromX != null && conn.fromY != null && conn.toX != null && conn.toY != null) {
-          this.carveCorridorDirect(conn.fromX, conn.fromY, conn.toX, conn.toY);
-        } else {
-          this.carveCorridor(conn.fromRoomId, conn.toRoomId, conn.direction);
-        }
+        this.carveCorridor(conn.fromRoomId, conn.toRoomId, conn.direction);
       }
     }
   }
@@ -97,8 +84,48 @@ export class LevelGrid {
         const gy = off.cellY + row;
         const gx = off.cellX + col;
         if (gy >= 0 && gy < this.height && gx >= 0 && gx < this.width) {
+          // Don't overwrite corridor cells with room walls — corridor wins
+          if (this.cells[gy][gx] === "corridor" && layout.cells[row][col] === "wall") {
+            // Keep corridor, but mark room ownership
+            this.cellOwner[gy][gx] = roomId;
+            continue;
+          }
           this.cells[gy][gx] = layout.cells[row][col];
           this.cellOwner[gy][gx] = roomId;
+        }
+      }
+    }
+
+    // After loading, open room walls where corridors are adjacent
+    this.openRoomWalls(roomId);
+  }
+
+  // Punch openings in room walls where corridors touch them
+  private openRoomWalls(roomId: string): void {
+    const off = this.roomOffsets.get(roomId);
+    if (!off) return;
+
+    for (let row = 0; row < off.height; row++) {
+      for (let col = 0; col < off.width; col++) {
+        const gy = off.cellY + row;
+        const gx = off.cellX + col;
+        if (gy < 0 || gy >= this.height || gx < 0 || gx >= this.width) continue;
+
+        // Only process wall cells on the room perimeter
+        if (this.cells[gy][gx] !== "wall") continue;
+        if (row > 0 && row < off.height - 1 && col > 0 && col < off.width - 1) continue; // interior wall, skip
+
+        // Check if any cardinal neighbor is a corridor
+        for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+          const nx = gx + dx;
+          const ny = gy + dy;
+          if (nx >= 0 && nx < this.width && ny >= 0 && ny < this.height) {
+            if (this.cells[ny][nx] === "corridor") {
+              // Open this wall — make it floor so the room connects to the corridor
+              this.cells[gy][gx] = "floor";
+              break;
+            }
+          }
         }
       }
     }
@@ -134,56 +161,79 @@ export class LevelGrid {
 
   isWalkable(x: number, y: number): boolean {
     const cell = this.getCell(x, y);
-    return cell === "floor" || cell === "object" || cell === "exit" || cell === "corridor" || cell === "stairs_down" || cell === "stairs_up";
+    return cell === "floor" || cell === "object" || cell === "corridor" || cell === "stairs_down" || cell === "stairs_up";
   }
 
-  private carveCorridor(fromId: string, toId: string, direction: string): void {
+  // Run after all rooms are loaded. Ensures every corridor actually connects
+  // into adjacent rooms by opening any wall cells between corridor and room floor.
+  finalizeConnectivity(): void {
+    let opened = 0;
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        if (this.cells[y][x] !== "wall") continue;
+
+        // Check if this wall sits between a corridor and a room floor/corridor
+        let hasCorridor = false;
+        let hasFloor = false;
+        for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= this.width || ny < 0 || ny >= this.height) continue;
+          const neighbor = this.cells[ny][nx];
+          if (neighbor === "corridor") hasCorridor = true;
+          if (neighbor === "floor" || neighbor === "object" || neighbor === "stairs_down" || neighbor === "stairs_up") hasFloor = true;
+        }
+
+        // Wall is between corridor and walkable space → open it
+        if (hasCorridor && hasFloor) {
+          this.cells[y][x] = "floor";
+          opened++;
+        }
+      }
+    }
+
+    // Also ensure corridors that end at room edges connect through.
+    // Check every corridor cell — if it's adjacent to a room wall, open that wall.
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        if (this.cells[y][x] !== "corridor") continue;
+        for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= this.width || ny < 0 || ny >= this.height) continue;
+          if (this.cells[ny][nx] === "wall" && this.cellOwner[ny][nx] !== null) {
+            // This is a room wall adjacent to a corridor — check if opening it
+            // would connect to room interior (check the cell beyond)
+            const bx = nx + dx, by = ny + dy;
+            if (bx >= 0 && bx < this.width && by >= 0 && by < this.height) {
+              const beyond = this.cells[by][bx];
+              if (beyond === "floor" || beyond === "object" || beyond === "corridor") {
+                this.cells[ny][nx] = "floor";
+                opened++;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (opened > 0) {
+      console.log(`[level-grid] finalizeConnectivity: opened ${opened} wall cells for corridor access`);
+    }
+  }
+
+  private carveCorridor(fromId: string, toId: string, _direction: string): void {
     const from = this.roomOffsets.get(fromId);
     const to = this.roomOffsets.get(toId);
     if (!from || !to) return;
 
-    // Find the exit edge midpoints for each room
-    let startX: number, startY: number, endX: number, endY: number;
+    // Connect room edge midpoints via L-shaped corridor
+    const fromCX = from.cellX + Math.floor(from.width / 2);
+    const fromCY = from.cellY + Math.floor(from.height / 2);
+    const toCX = to.cellX + Math.floor(to.width / 2);
+    const toCY = to.cellY + Math.floor(to.height / 2);
 
-    switch (direction) {
-      case "east":
-        startX = from.cellX + from.width; // right edge of from
-        startY = from.cellY + Math.floor(from.height / 2);
-        endX = to.cellX; // left edge of to
-        endY = to.cellY + Math.floor(to.height / 2);
-        break;
-      case "west":
-        startX = from.cellX - 1;
-        startY = from.cellY + Math.floor(from.height / 2);
-        endX = to.cellX + to.width;
-        endY = to.cellY + Math.floor(to.height / 2);
-        break;
-      case "south":
-        startX = from.cellX + Math.floor(from.width / 2);
-        startY = from.cellY + from.height;
-        endX = to.cellX + Math.floor(to.width / 2);
-        endY = to.cellY;
-        break;
-      case "north":
-        startX = from.cellX + Math.floor(from.width / 2);
-        startY = from.cellY - 1;
-        endX = to.cellX + Math.floor(to.width / 2);
-        endY = to.cellY + to.height;
-        break;
-      default:
-        return;
-    }
-
-    // Carve L-shaped corridor: go horizontal first, then vertical
-    this.carveLineH(startX, endX, startY);
-    this.carveLineV(startY, endY, endX);
-  }
-
-  // Carve an L-shaped corridor between two absolute cell positions
-  private carveCorridorDirect(x1: number, y1: number, x2: number, y2: number): void {
-    // Go horizontal first, then vertical
-    this.carveLineH(x1, x2, y1);
-    this.carveLineV(y1, y2, x2);
+    // Horizontal first, then vertical
+    this.carveLineH(fromCX, toCX, fromCY);
+    this.carveLineV(fromCY, toCY, toCX);
   }
 
   private carveLineH(x1: number, x2: number, y: number): void {
@@ -191,7 +241,7 @@ export class LevelGrid {
     const maxX = Math.max(x1, x2);
     for (let x = minX; x <= maxX; x++) {
       this.setCorridorCell(x, y);
-      this.setCorridorCell(x, y + 1); // 2-wide
+      this.setCorridorCell(x, y + 1);
     }
   }
 
@@ -200,15 +250,18 @@ export class LevelGrid {
     const maxY = Math.max(y1, y2);
     for (let y = minY; y <= maxY; y++) {
       this.setCorridorCell(x, y);
-      this.setCorridorCell(x + 1, y); // 2-wide
+      this.setCorridorCell(x + 1, y);
     }
   }
 
   private setCorridorCell(x: number, y: number): void {
     if (y >= 0 && y < this.height && x >= 0 && x < this.width) {
-      if (this.cellOwner[y][x] === null) { // don't overwrite room cells
+      // Corridors overwrite walls. Room floors stay as room floors.
+      const current = this.cells[y][x];
+      if (current === "wall") {
         this.cells[y][x] = "corridor";
       }
+      // If it's already floor/corridor/object, leave it — seamless transition
     }
   }
 }

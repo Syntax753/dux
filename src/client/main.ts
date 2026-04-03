@@ -1,6 +1,6 @@
 import { startGame } from "./game-api.js";
 import { createInitialState, loadRoom, addNarrative } from "./state.js";
-import { initGameLoop, playerManager, displayManager, setOnDescend, setOnAscend, setOnEnterRoom, placeTorchesForRoom } from "./engine/game-loop.js";
+import { initGameLoop, playerManager, displayManager, setOnDescend, setOnAscend, setOnEnterRoom, decorateRoom, decorateCorridors } from "./engine/game-loop.js";
 import { setRoomSize } from "./engine/level-grid.js";
 import { initNarrativePanel, renderNarrativePanel } from "./ui/narrative-panel.js";
 import { initInventoryPanel, renderInventoryPanel } from "./ui/inventory-panel.js";
@@ -108,7 +108,10 @@ function applyLevel(res: ReturnType<typeof createInitialState> extends never ? n
   );
   playerManager.loadRoom(res.currentRoom);
 
-  // Init display + lighting before placing torches
+  // Ensure corridors connect into the loaded room
+  playerManager.levelGrid.finalizeConnectivity();
+
+  // Init display + lighting before placing decorations
   displayManager.init(
     res.level.spatialMap,
     res.currentRoom.tileSet,
@@ -117,8 +120,14 @@ function applyLevel(res: ReturnType<typeof createInitialState> extends never ? n
     playerManager.levelGrid
   );
 
-  // Place torches in the start room
-  placeTorchesForRoom(res.currentRoom.roomId);
+  // Decorate the start room and corridors based on level theme
+  const theme = res.level.title.toLowerCase().includes("crypt") ? "crypt"
+    : res.level.title.toLowerCase().includes("forest") ? "forest"
+    : res.level.title.toLowerCase().includes("cave") ? "cavern"
+    : res.level.title.toLowerCase().includes("castle") ? "castle"
+    : "dungeon";
+  decorateRoom(res.currentRoom.roomId, theme);
+  decorateCorridors(theme);
 
   loadRoom(state, res.currentRoom);
   state.playerX = playerManager.playerX;
