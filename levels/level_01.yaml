@@ -1,0 +1,22 @@
+id: level_01
+title: "The Simple Door"
+theme: "dungeon"
+mood: "inviting"
+
+rooms:
+  - id: entry_chamber
+    name: "Entry Chamber"
+    description_hint: "A small stone chamber with a single wooden door"
+    width: 5
+    height: 5
+    exits:
+      - direction: north
+        to: exit
+        requires: open_door
+    chain:
+      - id: open_door
+        verb: OPEN
+        target: wooden_door
+        hint: "A sturdy wooden door with iron hinges"
+
+start_room: entry_chamber

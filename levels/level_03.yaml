@@ -1,0 +1,45 @@
+id: level_03
+title: "The Hidden Key"
+theme: "dungeon"
+mood: "ominous"
+
+rooms:
+  - id: antechamber
+    name: "The Antechamber"
+    description_hint: "A dusty antechamber with loose stones on the floor"
+    width: 7
+    height: 6
+    exits:
+      - direction: east
+        to: iron_gate_room
+    chain:
+      - id: find_key
+        verb: LOOK
+        target: flat_rock
+        reveals:
+          - rusty_key
+        hint: "A conspicuously placed flat rock on the ground"
+      - id: take_key
+        verb: GET
+        target: rusty_key
+        hint: "An old iron key, rusted but functional"
+
+  - id: iron_gate_room
+    name: "The Iron Gate"
+    description_hint: "A narrow corridor ending in a massive iron door"
+    width: 3
+    height: 8
+    exits:
+      - direction: west
+        to: antechamber
+      - direction: north
+        to: exit
+        requires: unlock_door
+    chain:
+      - id: unlock_door
+        verb: USE
+        target: rusty_key
+        on: iron_door
+        hint: "A heavy iron door with a large keyhole"
+
+start_room: antechamber

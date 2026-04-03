@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DUX — AI Dungeon Master</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>DUX</h1>
+        <span id="status" class="status"></span>
+      </header>
+
+      <div id="options-screen">
+        <p>Configure your dungeon, adventurer:</p>
+        <div class="option-row">
+          <label for="room-count">Number of rooms</label>
+          <input type="number" id="room-count" value="5" min="1" max="50" />
+        </div>
+        <button id="start-btn" class="start-btn">Enter the Dungeon</button>
+      </div>
+
+      <div id="loading" class="hidden">Loading...</div>
+
+      <div id="game" class="hidden">
+        <div id="game-area">
+          <canvas id="game-canvas"></canvas>
+          <div id="narrative-panel"></div>
+        </div>
+        <div id="inventory-panel">Inventory: empty</div>
+      </div>
+
+      <div id="radial-menu" style="display: none"></div>
+    </div>
+
+    <div id="controls-hint">
+      <span>WASD/Arrows: Move</span>
+      <span>E: Interact</span>
+      <span>ESC: Cancel</span>
+      <span>Enter: Select</span>
+    </div>
+
+    <script type="module" src="main.ts"></script>
+  </body>
+</html>

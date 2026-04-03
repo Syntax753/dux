@@ -1,0 +1,260 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #0a0a0f;
+  color: #c8c8d0;
+  font-family: "Courier New", monospace;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+#app {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 1rem;
+}
+
+/* --- Header --- */
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #2a2a3a;
+  margin-bottom: 1rem;
+}
+
+header h1 {
+  color: #d4a574;
+  font-size: 1.4rem;
+  letter-spacing: 0.15em;
+}
+
+.status {
+  color: #8a8a9a;
+  font-size: 0.85rem;
+}
+
+/* --- Options Screen --- */
+
+#options-screen p {
+  margin-bottom: 1.5rem;
+  color: #8a8a9a;
+}
+
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.option-row label {
+  color: #c8c8d0;
+  font-size: 0.9rem;
+  min-width: 140px;
+}
+
+.option-row input[type="number"] {
+  background: #12121a;
+  border: 1px solid #2a2a3a;
+  color: #d4a574;
+  font-family: inherit;
+  font-size: 1rem;
+  padding: 0.5rem 0.75rem;
+  width: 80px;
+  text-align: center;
+  outline: none;
+  caret-color: #d4a574;
+}
+
+.option-row input[type="number"]:focus {
+  border-color: #d4a574;
+}
+
+.start-btn {
+  background: #12121a;
+  border: 1px solid #d4a574;
+  color: #d4a574;
+  font-family: inherit;
+  font-size: 1rem;
+  padding: 0.75rem 2rem;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+  letter-spacing: 0.05em;
+}
+
+.start-btn:hover {
+  background: #d4a574;
+  color: #0a0a0f;
+}
+
+/* --- Loading --- */
+
+#loading {
+  color: #d4a574;
+  font-size: 1rem;
+  padding: 2rem;
+  text-align: center;
+}
+
+/* --- Game Area --- */
+
+#game-area {
+  display: flex;
+  gap: 1rem;
+  flex: 1;
+}
+
+#game-canvas {
+  background: #050508;
+  border: 1px solid #2a2a3a;
+  flex-shrink: 0;
+}
+
+/* --- Narrative Panel --- */
+
+#narrative-panel {
+  flex: 1;
+  min-width: 240px;
+  max-height: 640px;
+  overflow-y: auto;
+  border: 1px solid #2a2a3a;
+  background: #0e0e16;
+  padding: 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.narrative-entry {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #1a1a24;
+  color: #a8a8b8;
+  animation: fadeIn 0.3s ease;
+}
+
+.narrative-entry:last-child {
+  border-bottom: none;
+  color: #d4a574;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Inventory Panel --- */
+
+#inventory-panel {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #2a2a3a;
+  background: #0e0e16;
+  font-size: 0.8rem;
+  color: #8a8a9a;
+}
+
+/* --- Radial Menu --- */
+
+#radial-menu {
+  position: fixed;
+  background: #1a1a28;
+  border: 1px solid #d4a574;
+  border-radius: 6px;
+  padding: 0.5rem;
+  min-width: 180px;
+  z-index: 100;
+  transform: translate(-50%, -100%);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
+.radial-title {
+  color: #d4a574;
+  font-size: 0.85rem;
+  font-weight: bold;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid #2a2a3a;
+  margin-bottom: 0.25rem;
+}
+
+.radial-action {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #c8c8d0;
+  padding: 0.4rem 0.5rem;
+  font-family: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.radial-action:hover:not(.disabled),
+.radial-action.selected:not(.disabled) {
+  background: #2a2a3a;
+  border-color: #d4a574;
+}
+
+.radial-action.disabled {
+  color: #4a4a5a;
+  cursor: not-allowed;
+}
+
+.radial-label {
+  display: block;
+  color: #d4a574;
+  font-weight: bold;
+}
+
+.radial-desc {
+  display: block;
+  font-size: 0.75rem;
+  color: #8a8a9a;
+}
+
+/* --- Controls Hint --- */
+
+#controls-hint {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  padding: 0.4rem;
+  background: #0a0a0f;
+  border-top: 1px solid #1a1a24;
+  font-size: 0.7rem;
+  color: #4a4a5a;
+}
+
+/* --- Utilities --- */
+
+.hidden {
+  display: none !important;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a0f;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2a3a;
+}

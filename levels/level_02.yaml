@@ -1,0 +1,27 @@
+id: level_02
+title: "The Locked Door"
+theme: "dungeon"
+mood: "mysterious"
+
+rooms:
+  - id: pedestal_room
+    name: "The Pedestal Room"
+    description_hint: "A torch-lit chamber with a stone pedestal and a locked oak door"
+    width: 6
+    height: 7
+    exits:
+      - direction: north
+        to: exit
+        requires: unlock_door
+    chain:
+      - id: take_key
+        verb: GET
+        target: brass_key
+        hint: "A small brass key sitting on a stone pedestal"
+      - id: unlock_door
+        verb: USE
+        target: brass_key
+        on: locked_door
+        hint: "A heavy oak door with a brass lock"
+
+start_room: pedestal_room

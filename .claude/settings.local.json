@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(curl -s http://localhost:3000/)",
+      "Bash(curl -sv http://localhost:3000/)",
+      "Bash(curl -s -X POST http://localhost:3000/api/game/start -H \"Content-Type: application/json\" -d '{\"\"\"\"levelId\"\"\"\":\"\"\"\"level_01\"\"\"\"}')",
+      "Bash(curl:*)",
+      "Bash(npm run:*)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill:*)",
+      "Bash(tasklist)",
+      "Bash(npm uninstall:*)"
+    ]
+  }
+}
