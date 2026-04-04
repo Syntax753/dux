@@ -290,36 +290,49 @@ export function furnishRoom(
   const off = grid.roomOffsets.get(roomId);
   if (!off) return { placed: [] };
 
-  // Collect all valid placement positions
+  // Collect placement positions by attach type
+  // "wall" positions: actual wall tiles that have at least one adjacent floor/corridor
+  // "floor" positions: floor/corridor tiles inside the room
   const wallPositions: Array<{ x: number; y: number }> = [];
   const floorPositions: Array<{ x: number; y: number }> = [];
+  const corridorPositions: Array<{ x: number; y: number }> = [];
 
   for (let ly = 0; ly < off.height; ly++) {
     for (let lx = 0; lx < off.width; lx++) {
       const gx = off.cellX + lx;
       const gy = off.cellY + ly;
       const cell = grid.getCell(gx, gy);
-      if (cell !== "floor" && cell !== "corridor") continue;
 
-      let adjacentWall = false;
-      for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
-        if (grid.getCell(gx + dx, gy + dy) === "wall") { adjacentWall = true; break; }
+      if (cell === "wall") {
+        // Wall tile — check if it borders a walkable cell (so the item is visible)
+        let adjacentFloor = false;
+        for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+          const nc = grid.getCell(gx + dx, gy + dy);
+          if (nc === "floor" || nc === "corridor") { adjacentFloor = true; break; }
+        }
+        if (adjacentFloor) wallPositions.push({ x: gx, y: gy });
+      } else if (cell === "floor") {
+        floorPositions.push({ x: gx, y: gy });
+      } else if (cell === "corridor") {
+        corridorPositions.push({ x: gx, y: gy });
       }
-
-      if (adjacentWall) wallPositions.push({ x: gx, y: gy });
-      else floorPositions.push({ x: gx, y: gy });
     }
   }
 
   // Shuffle positions for random placement
   shuffle(wallPositions);
   shuffle(floorPositions);
+  shuffle(corridorPositions);
 
   const usedPositions = new Set<string>();
   const placedSummary: Array<{ itemId: string; count: number }> = [];
 
-  let wallIdx = 0;
-  let floorIdx = 0;
+  // Position pools indexed for each attach type
+  const pools: Record<string, { positions: Array<{ x: number; y: number }>; idx: number }> = {
+    wall: { positions: wallPositions, idx: 0 },
+    floor: { positions: floorPositions, idx: 0 },
+    corridor: { positions: corridorPositions, idx: 0 },
+  };
 
   for (const rule of table) {
     // Roll probability
@@ -334,26 +347,24 @@ export function furnishRoom(
 
     let placed = 0;
     for (let i = 0; i < count; i++) {
-      // Find a valid position based on attach type
       let pos: { x: number; y: number } | null = null;
 
-      if (def.attach.includes("wall")) {
-        while (wallIdx < wallPositions.length) {
-          const p = wallPositions[wallIdx++];
-          const key = `${p.x},${p.y}`;
-          if (!usedPositions.has(key)) { pos = p; usedPositions.add(key); break; }
+      // Try each attach type the item supports, in order
+      for (const attachType of def.attach) {
+        if (attachType === "any") {
+          // Try floor first, then corridor, then wall
+          for (const poolName of ["floor", "corridor", "wall"]) {
+            pos = takePosition(pools[poolName], usedPositions);
+            if (pos) break;
+          }
+        } else {
+          const pool = pools[attachType];
+          if (pool) pos = takePosition(pool, usedPositions);
         }
+        if (pos) break;
       }
 
-      if (!pos && (def.attach.includes("floor") || def.attach.includes("any"))) {
-        while (floorIdx < floorPositions.length) {
-          const p = floorPositions[floorIdx++];
-          const key = `${p.x},${p.y}`;
-          if (!usedPositions.has(key)) { pos = p; usedPositions.add(key); break; }
-        }
-      }
-
-      if (!pos) break; // no more valid positions
+      if (!pos) break; // no more valid positions for this item
       addItem({ typeId: rule.itemId, x: pos.x, y: pos.y });
       placed++;
     }
@@ -362,6 +373,21 @@ export function furnishRoom(
   }
 
   return { placed: placedSummary };
+}
+
+function takePosition(
+  pool: { positions: Array<{ x: number; y: number }>; idx: number },
+  used: Set<string>
+): { x: number; y: number } | null {
+  while (pool.idx < pool.positions.length) {
+    const p = pool.positions[pool.idx++];
+    const key = `${p.x},${p.y}`;
+    if (!used.has(key)) {
+      used.add(key);
+      return p;
+    }
+  }
+  return null;
 }
 
 // Roll a count from a weighted distribution
