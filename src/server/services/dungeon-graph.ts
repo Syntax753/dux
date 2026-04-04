@@ -209,17 +209,17 @@ function computeCorridorPath(from: DungeonRoom, to: DungeonRoom): Array<{ x: num
   let startX: number, startY: number, endX: number, endY: number;
 
   if (Math.abs(dx) >= Math.abs(dy)) {
-    // Primarily horizontal
-    startX = dx > 0 ? from.x + from.width : from.x - 1;
+    // Primarily horizontal — start FROM the room wall cell, not past it
+    startX = dx > 0 ? from.x + from.width - 1 : from.x;
     startY = fromCY;
-    endX = dx > 0 ? to.x - 1 : to.x + to.width;
+    endX = dx > 0 ? to.x : to.x + to.width - 1;
     endY = toCY;
   } else {
-    // Primarily vertical
+    // Primarily vertical — start FROM the room wall cell
     startX = fromCX;
-    startY = dy > 0 ? from.y + from.height : from.y - 1;
+    startY = dy > 0 ? from.y + from.height - 1 : from.y;
     endX = toCX;
-    endY = dy > 0 ? to.y - 1 : to.y + to.height;
+    endY = dy > 0 ? to.y : to.y + to.height - 1;
   }
 
   // L-shaped path: start → bend → end

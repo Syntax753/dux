@@ -15,6 +15,8 @@ export type MoveResult =
   | { type: "entered_room"; roomId: string; x: number; y: number } // walked into a new room
   | { type: "descend_stairs"; x: number; y: number }
   | { type: "ascend_stairs"; x: number; y: number }
+  | { type: "layer_up"; x: number; y: number; layer: number }
+  | { type: "layer_down"; x: number; y: number; layer: number }
   | { type: "noop" };
 
 const DIRECTION_LABELS: Record<string, string> = {
@@ -118,12 +120,29 @@ export class PlayerManager {
     const cell = this.levelGrid.getCell(newX, newY);
 
 
-    // Stairs
+    // Stairs (level transitions)
     if (cell === "stairs_down") {
       return { type: "descend_stairs", x: newX, y: newY };
     }
     if (cell === "stairs_up") {
       return { type: "ascend_stairs", x: newX, y: newY };
+    }
+
+    // Ladders (layer transitions within a level)
+    if (cell === "ladder_up") {
+      const newLayer = this.levelGrid.currentLayer + 1;
+      this.levelGrid.ensureLayer(newLayer);
+      this.levelGrid.switchLayer(newLayer);
+      this.playerX = newX;
+      this.playerY = newY;
+      return { type: "layer_up", x: newX, y: newY, layer: newLayer };
+    }
+    if (cell === "ladder_down") {
+      const newLayer = Math.max(0, this.levelGrid.currentLayer - 1);
+      this.levelGrid.switchLayer(newLayer);
+      this.playerX = newX;
+      this.playerY = newY;
+      return { type: "layer_down", x: newX, y: newY, layer: newLayer };
     }
 
     // Wall or any non-walkable cell

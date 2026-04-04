@@ -6,7 +6,7 @@ import type {
 import { LevelGrid } from "./level-grid.js";
 import { Camera } from "./camera.js";
 import { LightingSystem, type LightSource } from "./lighting.js";
-import { type PlacedItem, getItemType } from "./item-registry.js";
+import { type PlacedItem, getItemDef } from "./item-registry.js";
 
 const TILE_PX = 8;
 const NATIVE_SCALE = 4;
@@ -21,6 +21,7 @@ export class DisplayManager {
   readonly camera = new Camera();
   readonly lighting = new LightingSystem();
   private placedItems: PlacedItem[] = [];
+  showRoomIds = false; // debug: toggle with displayManager.showRoomIds = true in console
 
   init(
     spatialMap: LevelSpatialMap,
@@ -55,13 +56,14 @@ export class DisplayManager {
   addItem(item: PlacedItem): void {
     this.placedItems.push(item);
     // Register light source if the item emits light
-    const itemType = getItemType(item.typeId);
-    if (itemType && itemType.brightness > 0) {
+    const itemDef = getItemDef(item.typeId);
+    if (itemDef && (itemDef.brightness ?? 0) > 0) {
       this.lighting.addLight({
+
         x: item.x,
         y: item.y,
-        brightness: itemType.brightness,
-        radius: itemType.lightRadius,
+        brightness: itemDef.brightness!,
+        radius: itemDef.lightRadius ?? 4,
       });
     }
   }
@@ -112,14 +114,35 @@ export class DisplayManager {
     ctx.fillStyle = "#050508";
     ctx.fillRect(0, 0, this.canvasW, this.canvasH);
 
-    // Draw cells with brightness-based shading
+    // Draw other layers faded (if multi-layer)
+    const currentLayer = this.levelGrid.currentLayer;
+    for (const [layer, layerCells] of this.levelGrid.layers) {
+      if (layer === currentLayer) continue;
+      const layerFade = 0.15; // other layers shown at 15% brightness
+      for (let row = startRow; row < endRow; row++) {
+        for (let col = startCol; col < endCol; col++) {
+          const cell = layerCells[row]?.[col];
+          if (!cell || cell === "wall") continue;
+          let pattern: TilePattern;
+          if (cell === "corridor") {
+            pattern = this.tileSet.floor;
+          } else {
+            pattern = this.tileSet[cell] ?? this.tileSet.floor;
+          }
+          const sx = offsetX + col * CELL_PX;
+          const sy = offsetY + row * CELL_PX;
+          this.drawTileLit(ctx, pattern, sx, sy, layerFade);
+        }
+      }
+    }
+
+    // Draw current layer cells with brightness-based shading
     for (let row = startRow; row < endRow; row++) {
       for (let col = startCol; col < endCol; col++) {
         const bright = this.lighting.getBrightness(col, row);
-        const wasRevealed = this.lighting.isRevealed(col, row);
 
-        // Completely dark and never seen — skip
-        if (bright < 0.01 && !wasRevealed) continue;
+        // No light = invisible
+        if (bright < 0.01) continue;
 
         const cell = this.levelGrid.cells[row][col];
 
@@ -139,11 +162,47 @@ export class DisplayManager {
         if (bright > 0.01) {
           // Currently lit by a light source — draw at actual brightness
           this.drawTileLit(ctx, pattern, sx, sy, bright);
-        } else {
-          // Was revealed but no light source reaching here — very faint memory
-          this.drawTileLit(ctx, pattern, sx, sy, 0.03);
+        }
+        // else: 0 brightness = pitch black, don't draw anything
+      }
+    }
+
+    // Draw room ID labels on tiles (debug overlay)
+    if (this.showRoomIds) {
+      ctx.font = `${Math.max(6, CELL_PX * 0.3)}px monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      // Draw one label per room, centered in the room
+      for (const [roomId, off] of this.levelGrid.roomOffsets) {
+        const cx = offsetX + (off.cellX + off.width / 2) * CELL_PX;
+        const cy = offsetY + (off.cellY + off.height / 2) * CELL_PX;
+        // Background
+        const label = roomId.replace("room_", "R");
+        const tw = ctx.measureText(label).width + 6;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.fillRect(cx - tw / 2, cy - 6, tw, 12);
+        // Text
+        ctx.fillStyle = "#d4a574";
+        ctx.fillText(label, cx, cy);
+      }
+
+      // Also draw small room ID on each tile border
+      ctx.font = `${Math.max(5, CELL_PX * 0.2)}px monospace`;
+      ctx.globalAlpha = 0.3;
+      for (let row = startRow; row < endRow; row++) {
+        for (let col = startCol; col < endCol; col++) {
+          const owner = this.levelGrid.cellOwner[row][col];
+          if (!owner) continue;
+          const bright = this.lighting.getBrightness(col, row);
+          if (bright < 0.01 && !this.lighting.isRevealed(col, row)) continue;
+          const sx = offsetX + col * CELL_PX + 2;
+          const sy = offsetY + row * CELL_PX + CELL_PX - 2;
+          ctx.fillStyle = "#aaa";
+          ctx.fillText(owner.replace("room_", ""), sx, sy);
         }
       }
+      ctx.globalAlpha = 1;
     }
 
     // Draw player — always fully lit
@@ -175,7 +234,8 @@ export class DisplayManager {
 
       if (sx + CELL_PX < 0 || sx > this.canvasW || sy + CELL_PX < 0 || sy > this.canvasH) continue;
 
-      this.drawTileLit(ctx, pattern, sx, sy, bright > 0.01 ? bright : 0.03);
+      if (bright < 0.01) continue; // invisible in darkness
+      this.drawTileLit(ctx, pattern, sx, sy, bright);
     }
   }
 

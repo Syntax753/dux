@@ -13,10 +13,13 @@ export interface RoomExit {
   requires?: string; // chain step id that must be completed first
 }
 
+export type RoomCategory = "cell" | "open-air" | "shrine" | "flooded";
+
 export interface RoomDefinition {
   id: string;
   name: string;
   description_hint: string;
+  category: RoomCategory;
   width: number;  // 2-10
   height: number; // 2-10
   exits: RoomExit[];

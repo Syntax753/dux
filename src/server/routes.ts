@@ -13,6 +13,7 @@ import { generateLevelTiles } from "./agents/tile-artist.js";
 import { narrate } from "./agents/narrator.js";
 import { getItemActions } from "./agents/item-agent.js";
 import { checkAction, advanceChain, moveRoom } from "./agents/tools.js";
+import { generateQuests } from "./agents/quest-agent.js";
 import { generateLevel, type GeneratedLevel } from "./agents/level-generator.js";
 import type { DungeonGraph } from "./services/dungeon-graph.js";
 import type { ClientRoomData } from "../shared/types.js";
@@ -92,7 +93,7 @@ async function generateRoomLayout(
   const isFinalRoom = room.id === state.level.rooms[state.level.rooms.length - 1].id;
   const options: RoomDesignOptions = { isStartRoom, isFinalRoom };
 
-  const span = tracer?.startSpan("room-designer", `Grid layout for "${room.name}"`, parentSpanId, `Assembling ${room.width}x${room.height} grid for "${room.name}". ${isStartRoom ? "START room — placing stairs_up." : isFinalRoom ? "FINAL room — placing stairs_down." : ""} Using tile types [${availableTiles.join(", ")}]. Placing ${entities.length} entities.`);
+  const span = tracer?.startSpan("room-designer", `Grid layout for "${room.name}" [${room.category}]`, parentSpanId, `Assembling ${room.width}x${room.height} ${room.category} room "${room.name}". ${isStartRoom ? "START room — placing stairs_up." : isFinalRoom ? "FINAL room — placing stairs_down." : ""} Category=${room.category}. Tile types=[${availableTiles.join(", ")}]. Entities=${entities.length}.`);
   const layout = await designRoom(room, roomData?.scene ?? "", entities, state.levelStyle!, availableTiles, options);
   state.roomLayouts.set(room.id, layout);
   if (span) tracer!.endSpan(span.id, { width: layout.width, height: layout.height, entityCount: layout.entities.length });
@@ -169,7 +170,9 @@ routes.POST["/api/game/start"] = async (req, res) => {
       level = result.level;
       graph = result.graph;
       tracer.endSpan(graphSpan.id, { rooms: graph.rooms.length, edges: graph.edges.length, grid: `${graph.width}x${graph.height}` });
-      tracer.endSpan(genSpan.id, { title: level.title, theme: level.theme, rooms: level.rooms.length });
+      const catCounts: Record<string, number> = {};
+      for (const r of level.rooms) catCounts[r.category] = (catCounts[r.category] ?? 0) + 1;
+      tracer.endSpan(genSpan.id, { title: level.title, theme: level.theme, mood: level.mood, rooms: level.rooms.length, categories: catCounts });
     } catch (err) {
       tracer.errorSpan(genSpan.id, (err as Error).message);
       tracer.errorSpan(graphSpan.id, (err as Error).message);
@@ -226,7 +229,7 @@ routes.POST["/api/game/start"] = async (req, res) => {
           return result;
         })();
 
-    const [generated, spatialMap, levelStyle] = await Promise.all([
+    const [generated, spatialMap, levelStyle, quests] = await Promise.all([
       (async () => {
         const span = tracer.startSpan("room-generator", `Generating scenes for ${level.rooms.length} rooms`, phase1Span.id, `Level "${level.title}" has ${level.rooms.length} room(s). Need text descriptions and entity lists for each room.`);
         const result = await generateRooms(level);
@@ -243,6 +246,12 @@ routes.POST["/api/game/start"] = async (req, res) => {
         tracer.endSpan(span.id, result);
         return result;
       })(),
+      (async () => {
+        const span = tracer.startSpan("quest-agent", `Generating quests for "${level.title}"`, phase1Span.id, `Creating main quest + side quests that span multiple rooms to encourage exploration.`);
+        const result = await generateQuests(level);
+        tracer.endSpan(span.id, { questCount: result.length, main: result.filter((q) => q.isMain).length });
+        return result;
+      })(),
     ]);
 
     tracer.endSpan(phase1Span.id);
@@ -250,6 +259,7 @@ routes.POST["/api/game/start"] = async (req, res) => {
     // Store results
     state.spatialMap = spatialMap;
     state.levelStyle = levelStyle;
+    state.quests = quests;
     for (const room of level.rooms) {
       const data = generated.rooms[room.id];
       if (data) state.rooms.get(room.id)!.scene = data.scene;
@@ -326,9 +336,11 @@ routes.POST["/api/game/start"] = async (req, res) => {
         id: level.id, title: level.title, rooms: level.rooms.length, steps: totalSteps,
         spatialMap: state.spatialMap,
         roomSizes: level.rooms.map((r) => ({ roomId: r.id, width: r.width, height: r.height })),
+        roomCategories: Object.fromEntries(level.rooms.map((r) => [r.id, r.category])),
       },
       currentRoom: buildClientRoomData(state, level.start_room),
       narrative,
+      quests: state.quests.map((q) => ({ id: q.id, title: q.title, description: q.description, type: q.type, isMain: q.isMain, steps: q.steps, completed: q.completed })),
       trace: tracer.finish(),
     });
   } catch (err) {

@@ -26,7 +26,7 @@ export interface RoomStyle {
 
 // ---- Room Grid Layout ----
 
-export type CellType = "wall" | "floor" | "object" | "stairs_down" | "stairs_up";
+export type CellType = "wall" | "floor" | "object" | "stairs_down" | "stairs_up" | "ladder_up" | "ladder_down";
 
 export interface GridEntity {
   id: string;

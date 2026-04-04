@@ -27,6 +27,11 @@ export class LevelGrid {
   roomOffsets = new Map<string, RoomOffset>();
   cellOwner: (string | null)[][] = [];
 
+  // Multi-layer system
+  layers = new Map<number, (CellType | "corridor")[][]>(); // layer -> cell grid
+  layerOwner = new Map<number, (string | null)[][]>();
+  currentLayer = 0;
+
   init(spatialMap: LevelSpatialMap): void {
     const realRooms = spatialMap.rooms.filter((r) => r.roomId !== "exit");
 
@@ -46,6 +51,13 @@ export class LevelGrid {
     this.cellOwner = Array.from({ length: this.height }, () =>
       Array.from({ length: this.width }, () => null)
     );
+
+    // Initialize layer 0 (ground floor)
+    this.layers.clear();
+    this.layerOwner.clear();
+    this.layers.set(0, this.cells);
+    this.layerOwner.set(0, this.cellOwner);
+    this.currentLayer = 0;
 
     this.roomOffsets.clear();
     for (const r of realRooms) {
@@ -161,7 +173,37 @@ export class LevelGrid {
 
   isWalkable(x: number, y: number): boolean {
     const cell = this.getCell(x, y);
-    return cell === "floor" || cell === "object" || cell === "corridor" || cell === "stairs_down" || cell === "stairs_up";
+    return cell === "floor" || cell === "object" || cell === "corridor"
+      || cell === "stairs_down" || cell === "stairs_up"
+      || cell === "ladder_up" || cell === "ladder_down";
+  }
+
+  // --- Layer management ---
+
+  ensureLayer(layer: number): void {
+    if (this.layers.has(layer)) return;
+    // Create a new layer as all walls (empty)
+    this.layers.set(layer, Array.from({ length: this.height }, () =>
+      Array.from({ length: this.width }, () => "wall" as CellType)
+    ));
+    this.layerOwner.set(layer, Array.from({ length: this.height }, () =>
+      Array.from({ length: this.width }, () => null)
+    ));
+  }
+
+  switchLayer(layer: number): void {
+    this.ensureLayer(layer);
+    this.currentLayer = layer;
+    this.cells = this.layers.get(layer)!;
+    this.cellOwner = this.layerOwner.get(layer)!;
+  }
+
+  getLayerCells(layer: number): (CellType | "corridor")[][] | undefined {
+    return this.layers.get(layer);
+  }
+
+  getLayerCount(): number {
+    return this.layers.size;
   }
 
   // Run after all rooms are loaded. Ensures every corridor actually connects
@@ -217,6 +259,111 @@ export class LevelGrid {
 
     if (opened > 0) {
       console.log(`[level-grid] finalizeConnectivity: opened ${opened} wall cells for corridor access`);
+    }
+
+    // BFS walkability validation: ensure every room has at least one walkable
+    // cell reachable from the start room's walkable cells
+    this.validateWalkability();
+  }
+
+  // BFS from the first room's walkable cell. If any room's walkable cells
+  // can't be reached, force-carve a corridor from the nearest reachable cell.
+  private validateWalkability(): void {
+    // Find a walkable cell in the first room
+    const firstRoom = [...this.roomOffsets.values()][0];
+    if (!firstRoom) return;
+
+    let startX = -1, startY = -1;
+    outer: for (let y = firstRoom.cellY; y < firstRoom.cellY + firstRoom.height; y++) {
+      for (let x = firstRoom.cellX; x < firstRoom.cellX + firstRoom.width; x++) {
+        if (this.isWalkable(x, y)) { startX = x; startY = y; break outer; }
+      }
+    }
+    if (startX < 0) return;
+
+    // BFS to find all reachable walkable cells
+    const visited = new Set<number>();
+    const queue: Array<[number, number]> = [[startX, startY]];
+    visited.add(startY * this.width + startX);
+    while (queue.length > 0) {
+      const [cx, cy] = queue.shift()!;
+      for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx < 0 || nx >= this.width || ny < 0 || ny >= this.height) continue;
+        const key = ny * this.width + nx;
+        if (visited.has(key)) continue;
+        if (!this.isWalkable(nx, ny)) continue;
+        visited.add(key);
+        queue.push([nx, ny]);
+      }
+    }
+
+    // Check each room has at least one reachable cell
+    let fixCount = 0;
+    for (const [roomId, off] of this.roomOffsets) {
+      let roomReachable = false;
+      for (let y = off.cellY; y < off.cellY + off.height && !roomReachable; y++) {
+        for (let x = off.cellX; x < off.cellX + off.width && !roomReachable; x++) {
+          if (this.isWalkable(x, y) && visited.has(y * this.width + x)) {
+            roomReachable = true;
+          }
+        }
+      }
+
+      if (!roomReachable) {
+        console.warn(`[level-grid] Room "${roomId}" is UNREACHABLE! Force-carving corridor.`);
+        // Find a walkable cell in this room
+        let roomX = off.cellX + Math.floor(off.width / 2);
+        let roomY = off.cellY + Math.floor(off.height / 2);
+        for (let y = off.cellY; y < off.cellY + off.height; y++) {
+          for (let x = off.cellX; x < off.cellX + off.width; x++) {
+            if (this.isWalkable(x, y)) { roomX = x; roomY = y; break; }
+          }
+        }
+
+        // Find the nearest reachable cell
+        let nearX = startX, nearY = startY, nearDist = Infinity;
+        for (const key of visited) {
+          const vy = Math.floor(key / this.width);
+          const vx = key % this.width;
+          const d = Math.abs(vx - roomX) + Math.abs(vy - roomY);
+          if (d < nearDist) { nearDist = d; nearX = vx; nearY = vy; }
+        }
+
+        // Force-carve L-shaped corridor between them
+        this.carveLineH(roomX, nearX, roomY);
+        this.carveLineV(roomY, nearY, nearX);
+
+        // Also open any walls at the endpoints
+        for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+          const wx = roomX + dx, wy = roomY + dy;
+          if (wx >= 0 && wx < this.width && wy >= 0 && wy < this.height) {
+            if (this.cells[wy][wx] === "wall") this.cells[wy][wx] = "floor";
+          }
+        }
+
+        fixCount++;
+        // Re-run BFS to include newly connected cells
+        const newQueue: Array<[number, number]> = [[roomX, roomY]];
+        visited.add(roomY * this.width + roomX);
+        while (newQueue.length > 0) {
+          const [cx, cy] = newQueue.shift()!;
+          for (const [ddx, ddy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+            const nx = cx + ddx, ny = cy + ddy;
+            if (nx < 0 || nx >= this.width || ny < 0 || ny >= this.height) continue;
+            const nk = ny * this.width + nx;
+            if (visited.has(nk) || !this.isWalkable(nx, ny)) continue;
+            visited.add(nk);
+            newQueue.push([nx, ny]);
+          }
+        }
+      }
+    }
+
+    if (fixCount > 0) {
+      console.log(`[level-grid] validateWalkability: force-connected ${fixCount} unreachable room(s)`);
+    } else {
+      console.log(`[level-grid] validateWalkability: all ${this.roomOffsets.size} rooms reachable ✓`);
     }
   }
 

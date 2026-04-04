@@ -94,5 +94,23 @@ export function generateLevelTiles(style: RoomStyle): TileSet {
     })
   );
 
-  return { wall, floor, object, player, stairs_down, stairs_up };
+  // Ladder up: vertical rungs going up
+  const ladder_up: TilePattern = Array.from({ length: 8 }, (_, r) =>
+    Array.from({ length: 8 }, (_, c) => {
+      if (c === 1 || c === 6) return p.accent; // side rails
+      if (r % 2 === 0 && c >= 2 && c <= 5) return adjust(p.accent, -15); // rungs
+      return adjust(p.floor, 10); // lighter floor (going up)
+    })
+  );
+
+  // Ladder down: vertical rungs going down
+  const ladder_down: TilePattern = Array.from({ length: 8 }, (_, r) =>
+    Array.from({ length: 8 }, (_, c) => {
+      if (c === 1 || c === 6) return p.accent; // side rails
+      if (r % 2 === 0 && c >= 2 && c <= 5) return adjust(p.accent, -15); // rungs
+      return adjust(p.floor, -15); // darker floor (going down)
+    })
+  );
+
+  return { wall, floor, object, player, stairs_down, stairs_up, ladder_up, ladder_down };
 }

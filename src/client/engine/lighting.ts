@@ -50,8 +50,8 @@ export class LightingSystem {
     // Reset brightness
     this.brightness.fill(0);
 
-    // Player light source (50% brightness, radius 8)
-    this.applyLight({ x: playerX, y: playerY, brightness: 0.5, radius: 8 });
+    // Player light source (60% brightness, radius 8)
+    this.applyLight({ x: playerX, y: playerY, brightness: 0.6, radius: 8 });
 
     // Static lights (torches etc.)
     for (const light of this.staticLights) {

@@ -83,12 +83,13 @@ export async function callAgent(
     messageChars: msgChars,
     tools: toolNames,
   };
+  const toolDesc = toolNames.length > 0 ? `tools=[${toolNames.join(", ")}]` : "mode=prompt-only (no tool-use)";
   console.log(
     `[llm #${callId}] → model=${model} max_tokens=${maxTokens} ` +
     `system=${promptChars}ch messages=${msgChars}ch ` +
-    `tools=[${toolNames.length > 0 ? toolNames.join(", ") : "none"}]`
+    `${toolDesc}`
   );
-  broadcastSSE("llm-call", callInfo);
+  broadcastSSE("llm-call", { ...callInfo, toolDesc });
 
   const body: Record<string, unknown> = {
     model,

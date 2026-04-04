@@ -7,6 +7,7 @@ rooms:
   - id: antechamber
     name: "The Antechamber"
     description_hint: "A dusty antechamber with loose stones on the floor"
+    category: cell
     width: 7
     height: 6
     exits:
@@ -27,6 +28,7 @@ rooms:
   - id: iron_gate_room
     name: "The Iron Gate"
     description_hint: "A narrow corridor ending in a massive iron door"
+    category: shrine
     width: 3
     height: 8
     exits:

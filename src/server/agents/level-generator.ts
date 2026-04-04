@@ -1,9 +1,10 @@
-import type { LevelDefinition, RoomDefinition } from "../models/level.js";
+import type { LevelDefinition, RoomDefinition, RoomCategory } from "../models/level.js";
 import { callAgent } from "../services/llm-client.js";
 import { LEVEL_GENERATOR_SYSTEM } from "../prompts/level-generator-system.js";
 import { generateBSPLayout } from "../services/bsp-generator.js";
 import { buildDungeonGraph, type DungeonGraph } from "../services/dungeon-graph.js";
 import { v4 as uuid } from "uuid";
+import { broadcastSSE } from "../services/tracer.js";
 
 export interface GeneratedLevel {
   level: LevelDefinition;
@@ -95,10 +96,13 @@ Chain: [{ "id": "step_id", "verb": "LOOK|GET|USE|OPEN", "target": "obj_id", "on"
       exits.push({ direction: "north", to: "exit", requires: chain[chain.length - 1].id });
     }
 
+    const category = assignRoomCategory();
+
     return {
       id: gr.id,
       name: content?.name ?? `Chamber ${i + 1}`,
       description_hint: content?.description_hint ?? "A stone chamber",
+      category,
       width: gr.width,
       height: gr.height,
       exits,
@@ -113,7 +117,31 @@ Chain: [{ "id": "step_id", "verb": "LOOK|GET|USE|OPEN", "target": "obj_id", "on"
     rooms,
   };
 
+  // Log room category breakdown
+  const catCounts: Record<string, number> = {};
+  for (const r of rooms) {
+    catCounts[r.category] = (catCounts[r.category] ?? 0) + 1;
+  }
+  const breakdown = Object.entries(catCounts).map(([cat, n]) => `${cat}:${n}`).join(", ");
+  console.log(`[level-generator] Room categories: ${breakdown} | Theme: ${theme} | Mood: ${mood}`);
+  for (const r of rooms) {
+    console.log(`[level-generator]   ${r.id} "${r.name}" — ${r.category} (${r.width}x${r.height})`);
+  }
+  broadcastSSE("level-rooms", {
+    theme, mood,
+    categories: catCounts,
+    rooms: rooms.map((r) => ({ id: r.id, name: r.name, category: r.category, size: `${r.width}x${r.height}` })),
+  });
+
   return { level, graph };
+}
+
+// Room category probabilities: 75% cell, 20% open-air, 5% shrine
+function assignRoomCategory(): RoomCategory {
+  const roll = Math.random();
+  if (roll < 0.75) return "cell";
+  if (roll < 0.95) return "open-air";
+  return "shrine";
 }
 
 function getDirection(from: { x: number; y: number; width: number; height: number }, to: { x: number; y: number; width: number; height: number }): string {

@@ -70,7 +70,7 @@ export function initTraceStream(): void {
   evtSource.addEventListener("llm-call", (e) => {
     const d = JSON.parse(e.data);
     console.log(
-      `%c⚡ [llm #${d.callId}] → ${d.model} | max_tokens=${d.maxTokens} | system=${d.systemChars}ch | msgs=${d.messageChars}ch | tools=[${d.tools.length > 0 ? d.tools.join(", ") : "none"}]`,
+      `%c⚡ [llm #${d.callId}] → ${d.model} | max_tokens=${d.maxTokens} | system=${d.systemChars}ch | msgs=${d.messageChars}ch | ${d.toolDesc || (d.tools.length > 0 ? `tools=[${d.tools.join(", ")}]` : "mode=prompt-only")}`,
       "color: #80cbc4"
     );
   });
@@ -82,6 +82,17 @@ export function initTraceStream(): void {
       `%c⚡ [llm #${d.callId}] ← ${secs}s | ${d.inputTokens} in / ${d.outputTokens} out | stop=${d.stopReason} | text=${d.textLength}ch${d.toolCalls.length > 0 ? ` | tools=[${d.toolCalls.join(", ")}]` : ""}`,
       "color: #80cbc4"
     );
+  });
+
+  evtSource.addEventListener("level-rooms", (e) => {
+    const d = JSON.parse(e.data);
+    console.group(`%c🏰 [level-generator] ${d.rooms.length} rooms | Theme: ${d.theme} | Mood: ${d.mood}`, "color: #aed581; font-weight: bold");
+    console.log("%cCategory breakdown:", "color: #78909c", d.categories);
+    for (const r of d.rooms) {
+      const catStyle = r.category === "shrine" ? "color: #f06292" : r.category === "open-air" ? "color: #81c784" : "color: #90a4ae";
+      console.log(`%c  ${r.id} "${r.name}" — ${r.category} (${r.size})`, catStyle);
+    }
+    console.groupEnd();
   });
 
   evtSource.onerror = () => {

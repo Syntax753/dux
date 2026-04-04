@@ -1,4 +1,5 @@
 import type { LevelDefinition } from "./level.js";
+import type { Quest } from "../agents/quest-agent.js";
 import type {
   LevelSpatialMap,
   RoomLayout,
@@ -30,6 +31,7 @@ export interface GameState {
   roomLayouts: Map<string, RoomLayout>;
   // Background generation: promises that resolve when a room's layout is ready
   pendingRooms: Map<string, Promise<void>>;
+  quests: Quest[];
 }
 
 export function createGameState(
@@ -60,6 +62,7 @@ export function createGameState(
     levelTileSet: null,
     roomLayouts: new Map(),
     pendingRooms: new Map(),
+    quests: [],
   };
 }
 

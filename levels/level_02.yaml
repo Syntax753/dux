@@ -7,6 +7,7 @@ rooms:
   - id: pedestal_room
     name: "The Pedestal Room"
     description_hint: "A torch-lit chamber with a stone pedestal and a locked oak door"
+    category: cell
     width: 6
     height: 7
     exits:

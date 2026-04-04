@@ -7,6 +7,7 @@ rooms:
   - id: entry_chamber
     name: "Entry Chamber"
     description_hint: "A small stone chamber with a single wooden door"
+    category: cell
     width: 5
     height: 5
     exits:

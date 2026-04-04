@@ -7,6 +7,7 @@ import { initInventoryPanel, renderInventoryPanel } from "./ui/inventory-panel.j
 import { initRadialMenu } from "./ui/radial-menu.js";
 import { logTrace, initTraceStream } from "./ui/trace-logger.js";
 import { JourneyManager } from "./journey.js";
+import { initLoadingScreen, startLoadingAnimation, stopLoadingAnimation, updateLoadingText } from "./ui/loading-screen.js";
 
 const state = createInitialState();
 const journey = new JourneyManager();
@@ -38,24 +39,18 @@ roomCountInput.addEventListener("keydown", (e) => {
 async function enterNewLevel(roomCount: number, from?: { levelId: string; direction: "descend" | "ascend" }): Promise<void> {
   optionsScreen.classList.add("hidden");
   loadingEl.classList.remove("hidden");
-  loadingEl.textContent = "Generating world...";
+  startLoadingAnimation();
+  updateLoadingText("Generating world...");
 
   try {
     console.log(`%c[DUX] Generating ${roomCount}-room dungeon...`, "color: #d4a574; font-weight: bold");
-    let elapsed = 0;
-    const timer = setInterval(() => {
-      elapsed++;
-      loadingEl.textContent = `Generating world... (${elapsed}s)`;
-    }, 1000);
+    const t0 = Date.now();
 
-    let res;
-    try {
-      res = await startGame(undefined, roomCount);
-    } finally {
-      clearInterval(timer);
-    }
+    const res = await startGame(undefined, roomCount);
 
-    console.log("%c[DUX] World generated in " + elapsed + "s", "color: #81c784; font-weight: bold");
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    stopLoadingAnimation();
+    console.log(`%c[DUX] World generated in ${elapsed}s`, "color: #81c784; font-weight: bold");
     logTrace(res.trace);
 
     // Cache by level ID
@@ -66,8 +61,9 @@ async function enterNewLevel(roomCount: number, from?: { levelId: string; direct
 
     applyLevel(res);
   } catch (err) {
+    stopLoadingAnimation();
     console.error("[DUX] Game start failed:", err);
-    loadingEl.textContent = `Error: ${(err as Error).message}`;
+    updateLoadingText(`Error: ${(err as Error).message}`);
   }
 }
 
@@ -120,13 +116,15 @@ function applyLevel(res: ReturnType<typeof createInitialState> extends never ? n
     playerManager.levelGrid
   );
 
-  // Decorate the start room and corridors based on level theme
-  const theme = res.level.title.toLowerCase().includes("crypt") ? "crypt"
-    : res.level.title.toLowerCase().includes("forest") ? "forest"
-    : res.level.title.toLowerCase().includes("cave") ? "cavern"
-    : res.level.title.toLowerCase().includes("castle") ? "castle"
+  // Decorate based on level theme and room category
+  const titleLow = (res.level.title ?? "").toLowerCase();
+  const theme = titleLow.includes("crypt") ? "crypt"
+    : titleLow.includes("forest") ? "forest"
+    : titleLow.includes("cave") ? "cavern"
+    : titleLow.includes("castle") ? "castle"
     : "dungeon";
-  decorateRoom(res.currentRoom.roomId, theme);
+  const startRoomCategory = (res as { level: { roomCategories?: Record<string, string> } }).level.roomCategories?.[res.currentRoom.roomId] ?? "cell";
+  decorateRoom(res.currentRoom.roomId, theme, startRoomCategory);
   decorateCorridors(theme);
 
   loadRoom(state, res.currentRoom);
@@ -194,6 +192,7 @@ window.addEventListener("radial-dismissed", () => {
 // --- Init ---
 
 initTraceStream();
+initLoadingScreen();
 initNarrativePanel();
 initInventoryPanel();
 initRadialMenu();
