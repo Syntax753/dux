@@ -105,14 +105,31 @@ export type NarrationEvent =
 
 // ---- Tracing ----
 
+export type SpanKind = "server" | "client" | "internal";
+
+export interface SpanAttributes {
+  "otel.service"?: string;     // agent/service name
+  "otel.method"?: string;      // method being called
+  "span.kind"?: SpanKind;
+  "room.id"?: string;
+  "room.category"?: string;
+  "level.theme"?: string;
+  "level.rooms"?: number;
+  [key: string]: unknown;
+}
+
 export interface TraceSpan {
-  id: string;
+  traceId: string;             // transaction ID — same across all spans in one request
+  id: string;                  // span ID — unique per span
   parentId?: string;
   agent: string;
   purpose: string;
-  reasoning?: string; // why this agent was called, what it evaluated
-  startTime: number;
+  reasoning?: string;
+  kind: SpanKind;
+  attributes: SpanAttributes;
+  startTime: number;           // epoch ms
   endTime?: number;
+  duration?: number;           // ms, set on completion
   children: TraceSpan[];
   input?: unknown;
   output?: unknown;
