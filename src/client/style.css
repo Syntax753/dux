@@ -172,6 +172,18 @@ header h1 {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* --- Look Bar --- */
+
+#look-bar {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #2a2a3a;
+  background: #0e0e16;
+  font-size: 0.8rem;
+  color: #d4a574;
+  font-style: italic;
+  margin-top: 0.25rem;
+}
+
 /* --- Inventory Panel --- */
 
 #inventory-panel {

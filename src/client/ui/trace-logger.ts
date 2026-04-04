@@ -38,25 +38,22 @@ export function initTraceStream(): void {
   evtSource.addEventListener("span-start", (e) => {
     const d = JSON.parse(e.data);
     const style = AGENT_COLORS[d.agent] ?? KIND_COLORS[d.kind as SpanKind] ?? "color: #b0bec5";
-    const kindTag = d.kind === "server" ? "[SRV]" : d.kind === "client" ? "[CLI]" : "[INT]";
+    const kindTag = d.kind === "server" ? "SRV" : d.kind === "client" ? "CLI" : "INT";
     console.log(
-      `%c${d.timestamp} ${kindTag} ▶ ${d.agent}.${d.method} [trace:${d.traceId?.slice(0, 8)}|span:${d.id?.slice(0, 8)}]`,
+      `%c${d.timestamp} [${kindTag}] ▶ ENTER ${d.agent} → ${d.method} [trace:${d.traceId?.slice(0, 8)}|span:${d.id?.slice(0, 8)}]`,
       style
     );
     if (d.reasoning) {
       console.log(`%c  → Why: ${d.reasoning}`, "color: #78909c; font-style: italic");
-    }
-    if (d.attributes && Object.keys(d.attributes).length > 3) {
-      console.log("%c  → Attributes:", "color: #78909c", d.attributes);
     }
   });
 
   evtSource.addEventListener("span-end", (e) => {
     const d = JSON.parse(e.data);
     const style = AGENT_COLORS[d.agent] ?? KIND_COLORS[d.kind as SpanKind] ?? "color: #b0bec5";
-    const kindTag = d.kind === "server" ? "[SRV]" : d.kind === "client" ? "[CLI]" : "[INT]";
+    const kindTag = d.kind === "server" ? "SRV" : d.kind === "client" ? "CLI" : "INT";
     console.log(
-      `%c${d.timestamp} ${kindTag} ✓ ${d.agent}.${d.method} (${d.duration}ms) [trace:${d.traceId?.slice(0, 8)}]`,
+      `%c${d.timestamp} [${kindTag}] ✓ EXIT  ${d.agent} → ${d.method} (${d.duration}ms) [trace:${d.traceId?.slice(0, 8)}|span:${d.id?.slice(0, 8)}]`,
       style
     );
     if (d.output) {
@@ -67,7 +64,7 @@ export function initTraceStream(): void {
   evtSource.addEventListener("span-error", (e) => {
     const d = JSON.parse(e.data);
     console.log(
-      `%c${d.timestamp} ✗ ${d.agent}.${d.method} — ${d.error} [trace:${d.traceId?.slice(0, 8)}]`,
+      `%c${d.timestamp} [ERR] ✗ ${d.agent} → ${d.method} — ${d.error} [trace:${d.traceId?.slice(0, 8)}|span:${d.id?.slice(0, 8)}]`,
       "color: #ef5350; font-weight: bold"
     );
   });
@@ -75,7 +72,7 @@ export function initTraceStream(): void {
   evtSource.addEventListener("trace-complete", (e) => {
     const d = JSON.parse(e.data);
     console.log(
-      `%c${d.timestamp} ━━ TRANSACTION ${d.agent}.${d.method} COMPLETE — ${d.totalDuration}ms, ${d.spanCount} spans [trace:${d.traceId?.slice(0, 8)}] ━━`,
+      `%c${d.timestamp} ━━ TRANSACTION COMPLETE: ${d.agent} → ${d.method} — ${d.totalDuration}ms, ${d.spanCount} spans [trace:${d.traceId?.slice(0, 8)}] ━━`,
       "color: #d4a574; font-weight: bold; font-size: 11px"
     );
   });
@@ -86,6 +83,9 @@ export function initTraceStream(): void {
       `%c⚡ [llm #${d.callId}] → ${d.model} | max_tokens=${d.maxTokens} | system=${d.systemChars}ch | msgs=${d.messageChars}ch | ${d.toolDesc || "mode=prompt-only"}`,
       "color: #80cbc4"
     );
+    if (d.promptSummary) {
+      console.log(`%c    prompt: "${d.promptSummary}..."`, "color: #607d8b; font-style: italic");
+    }
   });
 
   evtSource.addEventListener("llm-result", (e) => {
@@ -108,6 +108,32 @@ export function initTraceStream(): void {
     console.groupEnd();
   });
 
+  evtSource.addEventListener("agent-log", (e) => {
+    const d = JSON.parse(e.data);
+    const kindTag = d.kind === "server" ? "[SRV]" : d.kind === "client" ? "[CLI]" : "[INT]";
+    const prefix = `${d.timestamp} ${kindTag} [trace:${d.traceId?.slice(0, 8)}|span:${d.spanId?.slice(0, 8)}] [${d.service}.${d.method}]`;
+
+    const style = AGENT_COLORS[d.service] ?? "color: #b0bec5";
+
+    switch (d.type) {
+      case "start":
+        console.log(`%c${prefix} START tools=[${d.tools?.join(", ") || "none"}]${d.reasoning ? ` — ${d.reasoning}` : ""}`, style);
+        break;
+      case "call":
+        console.log(`%c${prefix} CALL → ${d.target} — ${d.reason}`, style);
+        break;
+      case "result":
+        console.log(`%c${prefix} RESULT ← ${d.source} — ${d.summary}`, style);
+        break;
+      case "done":
+        console.log(`%c${prefix} DONE (${d.durationMs}ms) — ${d.summary}`, style + "; font-weight: bold");
+        break;
+      case "error":
+        console.log(`%c${prefix} ERROR — ${d.error}`, "color: #ef5350; font-weight: bold");
+        break;
+    }
+  });
+
   evtSource.onerror = () => {};
 }
 
@@ -126,10 +152,10 @@ function renderSpan(span: TraceSpan, depth: number, isRoot = false): void {
   const dur = span.duration != null ? `${span.duration}ms` : span.endTime ? `${span.endTime - span.startTime}ms` : "running...";
   const style = AGENT_COLORS[span.agent] ?? "color: #b0bec5";
   const statusIcon = span.status === "completed" ? "✓" : span.status === "error" ? "✗" : "▶";
-  const kindTag = span.kind === "server" ? "[SRV]" : span.kind === "client" ? "[CLI]" : "[INT]";
+  const kindTag = span.kind === "server" ? "SRV" : span.kind === "client" ? "CLI" : "INT";
   const ts = new Date(span.startTime).toISOString().slice(11, 23);
   const hasChildren = span.children.length > 0;
-  const label = `%c${ts} ${kindTag} ${statusIcon} ${span.agent}.${span.purpose} (${dur}) [span:${span.id?.slice(0, 8)}]`;
+  const label = `%c${ts} [${kindTag}] ${statusIcon} ${span.agent} → ${span.purpose} (${dur}) [trace:${span.traceId?.slice(0, 8)}|span:${span.id?.slice(0, 8)}]`;
 
   if (hasChildren) {
     if (isRoot) console.group(label, style);

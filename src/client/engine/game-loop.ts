@@ -9,7 +9,9 @@ import { renderNarrativePanel } from "../ui/narrative-panel.js";
 import { renderInventoryPanel } from "../ui/inventory-panel.js";
 import { showRadialMenu, hideRadialMenu } from "../ui/radial-menu.js";
 import type { RoomLayout } from "../../shared/types.js";
-import { getItemDef, getItemActions as getRegistryActions, getItemsForRoom, getWallFixtures, getFixtures } from "./item-registry.js";
+import type { ItemDef } from "./item-registry.js";
+import { getItemDef, getItemActions as getRegistryActions, getItemsForRoom } from "./item-registry.js";
+import { furnishRoom } from "./room-furnisher.js";
 
 let canvas: HTMLCanvasElement;
 let ctx: CanvasRenderingContext2D;
@@ -73,6 +75,12 @@ function tick(): void {
 function handleInput(): void {
   if (busy) return;
   input.consumeEscape();
+
+  // Numpad 5 = wait (skip turn)
+  if (input.consumeWait()) {
+    dbg(C.move, `⏳ [movement] Wait — skipping turn`);
+    return;
+  }
 
   if (input.consumeInteract() && state.screen === "playing") {
     // Check for decoration items first (no server call needed)
@@ -260,48 +268,17 @@ async function handleInteract(entityId: string, roomId: string): Promise<void> {
 }
 
 // Place themed decoration items in a room based on room category
-export function decorateRoom(roomId: string, theme: string = "dungeon", roomCategory: string = "cell"): void {
-  const off = playerManager.levelGrid.roomOffsets.get(roomId);
+export function decorateRoom(roomId: string, _theme: string = "dungeon", roomCategory: string = "cell"): void {
+  const grid = playerManager.levelGrid;
+  const off = grid.roomOffsets.get(roomId);
   if (!off) return;
 
-  const grid = playerManager.levelGrid;
-  const wallItems = getWallFixtures(theme, roomCategory);
-  const floorItems = getFixtures(theme, roomCategory);
-  const lightItems = wallItems.filter((i) => (i.brightness ?? 0) > 0);
-  const decoItems = floorItems.filter((i) => !(i.brightness ?? 0));
+  // Use the probability-based furnisher
+  const result = furnishRoom(roomId, roomCategory, grid, (item) => displayManager.addItem(item));
 
-  let wallAdjCount = 0;
-  let floorCount = 0;
-  let lightsPlaced = 0;
-  let decosPlaced = 0;
-
-  for (let ly = 0; ly < off.height; ly++) {
-    for (let lx = 0; lx < off.width; lx++) {
-      const gx = off.cellX + lx;
-      const gy = off.cellY + ly;
-      if (grid.getCell(gx, gy) !== "floor") continue;
-
-      let adjacentWall = false;
-      for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
-        if (grid.getCell(gx + dx, gy + dy) === "wall") { adjacentWall = true; break; }
-      }
-
-      if (adjacentWall) {
-        if (wallAdjCount % 10 === 0 && lightItems.length > 0) {
-          const item = lightItems[lightsPlaced % lightItems.length];
-          displayManager.addItem({ typeId: item.id, x: gx, y: gy });
-          lightsPlaced++;
-        }
-        wallAdjCount++;
-      } else {
-        if (floorCount % 15 === 0 && decoItems.length > 0) {
-          const item = decoItems[decosPlaced % decoItems.length];
-          displayManager.addItem({ typeId: item.id, x: gx, y: gy });
-          decosPlaced++;
-        }
-        floorCount++;
-      }
-    }
+  if (result.placed.length > 0) {
+    const summary = result.placed.map((p) => `${p.itemId}x${p.count}`).join(", ");
+    dbg(C.entity, `  🏰 [furnish] "${roomId}" (${roomCategory}): ${summary}`);
   }
 
   // Place a ladder_up in larger rooms (>= 5x5) for multi-layer access
@@ -310,11 +287,9 @@ export function decorateRoom(roomId: string, theme: string = "dungeon", roomCate
     const ly = off.cellY + 1;
     if (grid.getCell(lx, ly) === "floor") {
       grid.cells[ly][lx] = "ladder_up";
-      // Create the upper layer with a corridor-like walkway and a ladder_down back
-      const upperLayer = playerManager.levelGrid.currentLayer + 1;
-      playerManager.levelGrid.ensureLayer(upperLayer);
-      const upperCells = playerManager.levelGrid.getLayerCells(upperLayer)!;
-      // Create a small walkway on the upper layer around the ladder position
+      const upperLayer = grid.currentLayer + 1;
+      grid.ensureLayer(upperLayer);
+      const upperCells = grid.getLayerCells(upperLayer)!;
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 2; dx++) {
           const ux = lx + dx, uy = ly + dy;
@@ -323,14 +298,9 @@ export function decorateRoom(roomId: string, theme: string = "dungeon", roomCate
           }
         }
       }
-      // Place ladder_down on the upper layer at the same position
       upperCells[ly][lx] = "ladder_down";
-      dbg(C.entity, `  🪜 [layer] Placed ladder in "${roomId}" at (${lx},${ly}) — connects to layer ${upperLayer}`);
+      dbg(C.entity, `  🪜 [layer] Placed ladder in "${roomId}" at (${lx},${ly})`);
     }
-  }
-
-  if (lightsPlaced + decosPlaced > 0) {
-    dbg(C.entity, `  🏰 [decorate] "${roomId}": ${lightsPlaced} lights + ${decosPlaced} decorations (theme: ${theme})`);
   }
 }
 
@@ -357,6 +327,50 @@ export function decorateCorridors(theme: string = "dungeon"): void {
   if (placed > 0) dbg(C.entity, `  🔥 [decorate] ${placed} corridor lights (theme: ${theme})`);
 }
 
+let lookBarEl: HTMLElement | null = null;
+let lastLookText = "";
+
+function updateLookBar(): void {
+  if (!lookBarEl) lookBarEl = document.getElementById("look-bar");
+  if (!lookBarEl) return;
+
+  const px = playerManager.playerX;
+  const py = playerManager.playerY;
+  const items: string[] = [];
+
+  // Check for decoration items on or adjacent to the player
+  const nearby = displayManager.getPlacedItems().filter((item) => {
+    const dx = Math.abs(item.x - px);
+    const dy = Math.abs(item.y - py);
+    return dx <= 1 && dy <= 1;
+  });
+
+  for (const item of nearby) {
+    const def = getItemDef(item.typeId);
+    if (def) items.push(def.name);
+  }
+
+  // Check for server entities nearby
+  const entity = playerManager.getAdjacentEntity();
+  if (entity) items.push(entity.name);
+
+  // Check what cell the player is on
+  const cell = playerManager.levelGrid.getCell(px, py);
+  if (cell === "stairs_down") items.push("a descending staircase");
+  if (cell === "stairs_up") items.push("an ascending staircase");
+  if (cell === "ladder_up") items.push("a ladder going up");
+  if (cell === "ladder_down") items.push("a ladder going down");
+
+  const text = items.length > 0
+    ? `You see ${items.join(", ")}.`
+    : "You see nothing of interest.";
+
+  if (text !== lastLookText) {
+    lookBarEl.textContent = text;
+    lastLookText = text;
+  }
+}
+
 function render(): void {
   if (!displayManager.ready) return;
 
@@ -371,4 +385,7 @@ function render(): void {
     allEntities.push(...playerManager.getEntitiesLevelCoords(roomId));
   }
   displayManager.renderEntities(ctx, allEntities, playerManager.currentRoomId);
+
+  // Update "You see" bar
+  updateLookBar();
 }

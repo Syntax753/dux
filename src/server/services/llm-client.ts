@@ -84,12 +84,14 @@ export async function callAgent(
     tools: toolNames,
   };
   const toolDesc = toolNames.length > 0 ? `tools=[${toolNames.join(", ")}]` : "mode=prompt-only (no tool-use)";
+  // Extract first line of system prompt as summary
+  const promptSummary = systemPrompt.split("\n").find((l) => l.trim().length > 0)?.trim().slice(0, 80) ?? "?";
   console.log(
     `[llm #${callId}] → model=${model} max_tokens=${maxTokens} ` +
     `system=${promptChars}ch messages=${msgChars}ch ` +
-    `${toolDesc}`
+    `${toolDesc}\n    prompt: "${promptSummary}..."`
   );
-  broadcastSSE("llm-call", { ...callInfo, toolDesc });
+  broadcastSSE("llm-call", { ...callInfo, toolDesc, promptSummary });
 
   const body: Record<string, unknown> = {
     model,

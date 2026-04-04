@@ -1,6 +1,7 @@
 import type { NarrationEvent } from "../../shared/types.js";
 import { callAgent } from "../services/llm-client.js";
 import { NARRATOR_SYSTEM } from "../prompts/narrator-system.js";
+import { agentLog, type AgentContext } from "../services/agent-logger.js";
 
 interface NarratorContext {
   roomName: string;

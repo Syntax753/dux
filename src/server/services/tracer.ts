@@ -1,4 +1,5 @@
 import type { TraceSpan, SpanKind, SpanAttributes } from "../../shared/types.js";
+import type { AgentContext } from "./agent-logger.js";
 import { v4 as uuid } from "uuid";
 import http from "http";
 
@@ -34,8 +35,8 @@ export class Tracer {
   private root: TraceSpan;
   readonly traceId: string;
 
-  constructor(service: string, method: string, kind: SpanKind = "server") {
-    this.traceId = uuid();
+  constructor(service: string, method: string, kind: SpanKind = "server", parentTraceId?: string) {
+    this.traceId = parentTraceId ?? uuid();
     const now = Date.now();
 
     this.root = {
@@ -61,7 +62,7 @@ export class Tracer {
       kind,
       timestamp: ts,
     });
-    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}] ▶ ${service}.${method} (${kind})`);
+    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}] [${kind.toUpperCase()}] ▶ ENTER ${service} → ${method}`);
   }
 
   startSpan(
@@ -70,7 +71,7 @@ export class Tracer {
     parentId?: string,
     reasoning?: string,
     attrs?: SpanAttributes,
-    kind: SpanKind = "internal"
+    kind: SpanKind = "server"
   ): TraceSpan {
     const now = Date.now();
     const span: TraceSpan = {
@@ -113,7 +114,7 @@ export class Tracer {
 
     const indent = this.getDepth(span.id);
     const pad = "  ".repeat(indent);
-    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}] ${pad}▶ ${service}.${method} (${kind})${reasoning ? ` — ${reasoning}` : ""}`);
+    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}|span:${span.id.slice(0, 8)}] ${pad}[${kind.toUpperCase()}] ▶ ENTER ${service} → ${method}${reasoning ? ` — ${reasoning}` : ""}`);
     return span;
   }
 
@@ -130,6 +131,7 @@ export class Tracer {
     broadcastSSE("span-end", {
       traceId: this.traceId,
       id: spanId,
+      parentId: span.parentId,
       agent: span.agent,
       method: span.purpose,
       kind: span.kind,
@@ -140,7 +142,7 @@ export class Tracer {
 
     const indent = this.getDepth(spanId);
     const pad = "  ".repeat(indent);
-    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}] ${pad}✓ ${span.agent}.${span.purpose} (${span.duration}ms)`);
+    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}|span:${spanId.slice(0, 8)}] ${pad}[${span.kind.toUpperCase()}] ✓ EXIT  ${span.agent} → ${span.purpose} (${span.duration}ms)`);
   }
 
   errorSpan(spanId: string, error: string): void {
@@ -164,7 +166,7 @@ export class Tracer {
 
     const indent = this.getDepth(spanId);
     const pad = "  ".repeat(indent);
-    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}] ${pad}✗ ${span.agent}.${span.purpose} — ${error}`);
+    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}|span:${spanId.slice(0, 8)}] ${pad}[ERR] ✗ ${span.agent} → ${span.purpose} — ${error}`);
   }
 
   finish(): TraceSpan {
@@ -184,12 +186,27 @@ export class Tracer {
       timestamp: ts,
     });
 
-    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}] ━━ ${this.root.agent}.${this.root.purpose} COMPLETE (${this.root.duration}ms, ${this.spans.size} spans) ━━`);
+    console.log(`[${ts}] [trace:${this.traceId.slice(0, 8)}] ━━ TRANSACTION COMPLETE: ${this.root.agent} → ${this.root.purpose} — ${this.root.duration}ms, ${this.spans.size} spans ━━`);
     return this.root;
   }
 
   get rootId(): string {
     return this.root.id;
+  }
+
+  // Get an AgentContext for a span — use with agentLog
+  contextFor(span: TraceSpan): AgentContext {
+    return {
+      traceId: this.traceId,
+      spanId: span.id,
+      service: span.agent,
+      method: span.purpose,
+      kind: span.kind,
+    };
+  }
+
+  get rootContext(): AgentContext {
+    return this.contextFor(this.root);
   }
 
   private getDepth(spanId: string): number {

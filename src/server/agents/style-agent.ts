@@ -2,6 +2,7 @@ import type { RoomStyle } from "../../shared/types.js";
 import type { LevelDefinition } from "../models/level.js";
 import { callAgent } from "../services/llm-client.js";
 import { STYLE_AGENT_SYSTEM } from "../prompts/style-agent-system.js";
+import { agentLog, type AgentContext } from "../services/agent-logger.js";
 
 export async function generateLevelStyle(
   level: LevelDefinition

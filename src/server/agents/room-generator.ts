@@ -1,6 +1,7 @@
 import type { LevelDefinition } from "../models/level.js";
 import { callAgent } from "../services/llm-client.js";
 import { ROOM_GENERATOR_SYSTEM } from "../prompts/room-generator-system.js";
+import { agentLog, type AgentContext } from "../services/agent-logger.js";
 
 export interface RoomGeneratorOutput {
   rooms: Record<
@@ -18,8 +19,11 @@ export interface RoomGeneratorOutput {
 }
 
 export async function generateRooms(
-  level: LevelDefinition
+  level: LevelDefinition,
+  ctx?: AgentContext
 ): Promise<RoomGeneratorOutput> {
+  const logCtx = ctx ?? agentLog.fromSpan("?", "?", "room-generator", "generateRooms");
+  agentLog.start(logCtx, ["llm/claude-sonnet"], `Generating scenes + entities for ${level.rooms.length} rooms`);
   const roomDescriptions = level.rooms
     .map((room) => {
       const exits = room.exits

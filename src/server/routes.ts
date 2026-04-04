@@ -14,8 +14,9 @@ import { narrate } from "./agents/narrator.js";
 import { getItemActions } from "./agents/item-agent.js";
 import { checkAction, advanceChain, moveRoom } from "./agents/tools.js";
 import { generateQuests } from "./agents/quest-agent.js";
-import { generateLevel, type GeneratedLevel } from "./agents/level-generator.js";
-import type { DungeonGraph } from "./services/dungeon-graph.js";
+import { agentLog } from "./services/agent-logger.js";
+import { runGameAgent } from "./agents/game-agent.js";
+import { generateLevel } from "./agents/level-generator.js";
 import type { ClientRoomData } from "../shared/types.js";
 import type { GameState } from "./models/game-state.js";
 import type { RoomDefinition } from "./models/level.js";
@@ -155,28 +156,38 @@ routes.POST["/api/game/start"] = async (req, res) => {
   const body = (await readBody(req)) as { levelId?: string; roomCount?: number };
 
   let level;
-  let graph: DungeonGraph | null = null;
   const tracer = new Tracer("game/start", body.levelId ? `Starting level "${body.levelId}"` : `Generating ${body.roomCount ?? 5}-room level`);
 
   if (body.levelId) {
     level = getLevel(body.levelId);
     if (!level) { json(res, 404, { error: `Level "${body.levelId}" not found` }); return; }
   } else {
+    // Use the game-agent to orchestrate the entire pipeline
     const roomCount = Math.max(1, Math.min(50, body.roomCount ?? 5));
-    const graphSpan = tracer.startSpan("dungeon-graph", `Building ${roomCount}-room dungeon graph`, undefined, `BSP partitioning → room placement → MST for guaranteed connectivity → corridor waypoints → validation. All instant, no LLM.`);
-    const genSpan = tracer.startSpan("level-generator", `Creative content for ${roomCount} rooms`, undefined, `LLM generates names, themes, puzzles for each room in the graph.`);
     try {
-      const result = await generateLevel(roomCount);
-      level = result.level;
-      graph = result.graph;
-      tracer.endSpan(graphSpan.id, { rooms: graph.rooms.length, edges: graph.edges.length, grid: `${graph.width}x${graph.height}` });
-      const catCounts: Record<string, number> = {};
-      for (const r of level.rooms) catCounts[r.category] = (catCounts[r.category] ?? 0) + 1;
-      tracer.endSpan(genSpan.id, { title: level.title, theme: level.theme, mood: level.mood, rooms: level.rooms.length, categories: catCounts });
+      const result = await runGameAgent(roomCount);
+      const state = result.state;
+
+      let totalSteps = 0;
+      for (const r of state.level.rooms) totalSteps += r.chain.length;
+
+      json(res, 200, {
+        sessionId: state.sessionId,
+        level: {
+          id: state.level.id, title: state.level.title, rooms: state.level.rooms.length, steps: totalSteps,
+          spatialMap: state.spatialMap,
+          roomSizes: state.level.rooms.map((r) => ({ roomId: r.id, width: r.width, height: r.height })),
+          roomCategories: Object.fromEntries(state.level.rooms.map((r) => [r.id, r.category])),
+        },
+        currentRoom: buildClientRoomData(state, state.level.start_room),
+        narrative: result.narrative,
+        quests: state.quests.map((q) => ({ id: q.id, title: q.title, description: q.description, type: q.type, isMain: q.isMain, steps: q.steps, completed: q.completed })),
+        trace: result.trace,
+      });
+      return;
     } catch (err) {
-      tracer.errorSpan(genSpan.id, (err as Error).message);
-      tracer.errorSpan(graphSpan.id, (err as Error).message);
-      json(res, 500, { error: "Failed to generate level", trace: tracer.finish() });
+      console.error("Game agent failed:", err);
+      json(res, 500, { error: (err as Error).message });
       return;
     }
   }
@@ -190,44 +201,13 @@ routes.POST["/api/game/start"] = async (req, res) => {
     // These are independent — all only need the level definition
     const phase1Span = tracer.startSpan("phase-1", `Parallel: scenes + layout + style`, tracer.rootId, `Running 3 agents in parallel: room-generator (scenes/entities), level-architect (spatial positions), style-agent (color palette). All only need the level definition — no dependencies between them.`);
 
-    // Build spatial map from dungeon graph
-    const spatialMapPromise = graph
-      ? (async () => {
-          const span = tracer.startSpan("spatial-map", `Building spatial map from dungeon graph`, phase1Span.id, `Room positions + corridor waypoints from validated graph. All rooms guaranteed connected.`);
-          // Convert graph edges with waypoints to corridor segments
-          const corridorSegments: import("../shared/types.js").CorridorSegmentData[] = [];
-          for (const edge of graph!.edges) {
-            const wp = edge.waypoints;
-            for (let i = 0; i < wp.length - 1; i++) {
-              const a = wp[i], b = wp[i + 1];
-              if (a.y === b.y) {
-                corridorSegments.push({ x1: Math.min(a.x, b.x), y1: a.y, x2: Math.max(a.x, b.x), y2: a.y, type: "horizontal" });
-              } else {
-                corridorSegments.push({ x1: a.x, y1: Math.min(a.y, b.y), x2: a.x, y2: Math.max(a.y, b.y), type: "vertical" });
-              }
-            }
-          }
-          const result: import("../shared/types.js").LevelSpatialMap = {
-            rooms: graph!.rooms.map((r) => ({ roomId: r.id, gridX: r.x, gridY: r.y })),
-            connections: graph!.edges.map((e) => {
-              const from = graph!.rooms.find((r) => r.id === e.fromId)!;
-              const to = graph!.rooms.find((r) => r.id === e.toId)!;
-              const dx = (to.x + to.width / 2) - (from.x + from.width / 2);
-              const dy = (to.y + to.height / 2) - (from.y + from.height / 2);
-              const direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "east" : "west") : (dy > 0 ? "south" : "north");
-              return { fromRoomId: e.fromId, toRoomId: e.toId, direction };
-            }),
-            corridorSegments,
-          };
-          tracer.endSpan(span.id, { rooms: result.rooms.length, corridors: corridorSegments.length });
-          return result;
-        })()
-      : (async () => {
-          const span = tracer.startSpan("level-architect", `Planning spatial layout for ${level.rooms.length} rooms`, phase1Span.id, `Assigning (x,y) grid positions to ${level.rooms.length} room(s) based on exit connections.`);
-          const result = await planSpatialLayout(level);
-          tracer.endSpan(span.id, result);
-          return result;
-        })();
+    // For YAML levels: use level-architect to plan spatial layout
+    const spatialMapPromise = (async () => {
+      const span = tracer.startSpan("level-architect", `Planning spatial layout for ${level.rooms.length} rooms`, phase1Span.id, `Assigning (x,y) grid positions to ${level.rooms.length} room(s) based on exit connections.`);
+      const result = await planSpatialLayout(level);
+      tracer.endSpan(span.id, result);
+      return result;
+    })();
 
     const [generated, spatialMap, levelStyle, quests] = await Promise.all([
       (async () => {
@@ -304,7 +284,7 @@ routes.POST["/api/game/start"] = async (req, res) => {
       // Generate adjacent rooms first (in parallel with each other)
       const adjacentPromise = Promise.all(
         adjacentRooms.map((room) => {
-          const bgTracer = new Tracer("background-room", `Background (adjacent): layout for "${room.name}"`);
+          const bgTracer = new Tracer("background-room", `Background (adjacent): layout for "${room.name}"`, "server", tracer.traceId);
           const promise = generateRoomLayout(state, room, generated, bgTracer, bgTracer.rootId)
             .then(() => { console.log(`[background] ✓ Adjacent room "${room.name}" ready`); setSession(state); })
             .catch((err) => { console.error(`[background] ✗ Room "${room.name}" failed:`, err); });
@@ -316,7 +296,7 @@ routes.POST["/api/game/start"] = async (req, res) => {
       // Distant rooms start after adjacent rooms complete
       adjacentPromise.then(() => {
         for (const room of distantRooms) {
-          const bgTracer = new Tracer("background-room", `Background (distant): layout for "${room.name}"`);
+          const bgTracer = new Tracer("background-room", `Background (distant): layout for "${room.name}"`, "server", tracer.traceId);
           const promise = generateRoomLayout(state, room, generated, bgTracer, bgTracer.rootId)
             .then(() => { console.log(`[background] ✓ Distant room "${room.name}" ready`); setSession(state); })
             .catch((err) => { console.error(`[background] ✗ Room "${room.name}" failed:`, err); });

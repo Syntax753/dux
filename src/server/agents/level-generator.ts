@@ -5,19 +5,26 @@ import { generateBSPLayout } from "../services/bsp-generator.js";
 import { buildDungeonGraph, type DungeonGraph } from "../services/dungeon-graph.js";
 import { v4 as uuid } from "uuid";
 import { broadcastSSE } from "../services/tracer.js";
+import { agentLog, type AgentContext } from "../services/agent-logger.js";
 
 export interface GeneratedLevel {
   level: LevelDefinition;
   graph: DungeonGraph;
 }
 
-export async function generateLevel(roomCount: number): Promise<GeneratedLevel> {
-  // 1. BSP partitions the space
-  const bsp = generateBSPLayout(roomCount);
-  console.log(`[level-generator] BSP: ${bsp.partitions.length} partitions in ${bsp.totalWidth}x${bsp.totalHeight}`);
+export async function generateLevel(roomCount: number, ctx?: AgentContext): Promise<GeneratedLevel> {
+  const logCtx = ctx ?? agentLog.fromSpan("?", "?", "level-generator", "generateLevel");
+  agentLog.start(logCtx, ["bsp-generator", "dungeon-graph", "llm/level-content"], `Generating ${roomCount}-room dungeon`);
 
-  // 2. Dungeon graph: places rooms, builds MST + extra edges, computes corridors, validates connectivity
+  // 1. BSP partitions the space
+  agentLog.call(logCtx, "bsp-generator", `Partitioning space for ${roomCount} rooms`);
+  const bsp = generateBSPLayout(roomCount);
+  agentLog.result(logCtx, "bsp-generator", `${bsp.partitions.length} partitions in ${bsp.totalWidth}x${bsp.totalHeight}`);
+
+  // 2. Dungeon graph
+  agentLog.call(logCtx, "dungeon-graph", "Building MST + corridors + validation");
   const graph = buildDungeonGraph(bsp.partitions, bsp.totalWidth, bsp.totalHeight);
+  agentLog.result(logCtx, "dungeon-graph", `${graph.rooms.length} rooms, ${graph.edges.length} edges`);
 
   // 3. Build adjacency for the level definition
   const roomAdj = new Map<string, Set<string>>();
@@ -60,6 +67,7 @@ Chain: [{ "id": "step_id", "verb": "LOOK|GET|USE|OPEN", "target": "obj_id", "on"
   const roomContent = new Map<string, { name: string; description_hint: string; chain: RoomDefinition["chain"] }>();
 
   try {
+    agentLog.call(logCtx, "llm/claude-sonnet", `Creative content for ${roomCount} rooms (max_tokens=${maxTokens})`);
     const response = await callAgent(LEVEL_GENERATOR_SYSTEM, [{ role: "user", content: userMessage }], undefined, undefined, maxTokens);
     let text = response.text.trim();
     if (text.startsWith("```")) text = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
@@ -70,8 +78,9 @@ Chain: [{ "id": "step_id", "verb": "LOOK|GET|USE|OPEN", "target": "obj_id", "on"
     for (const [id, content] of Object.entries(parsed.rooms ?? {})) {
       roomContent.set(id, content as { name: string; description_hint: string; chain: RoomDefinition["chain"] });
     }
+    agentLog.result(logCtx, "llm/claude-sonnet", `${roomContent.size} rooms with content`);
   } catch (err) {
-    console.warn("[level-generator] LLM content failed, using fallbacks:", err);
+    agentLog.error(logCtx, `LLM content failed: ${(err as Error).message}. Using fallbacks.`);
   }
 
   // 5. Assemble LevelDefinition
