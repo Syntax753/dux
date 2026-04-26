@@ -1,3 +1,4 @@
+import { spawn } from "child_process";
 import { broadcastSSE } from "./tracer.js";
 
 // --- Types matching the Anthropic Messages API ---
@@ -38,26 +39,26 @@ export interface AgentResponse {
   stopReason: string | null;
 }
 
-// --- API call via fetch (works server-side with key, artifact-side without) ---
+// --- Mode dispatch ---
+// VITE_AI_MODE selects how LLM calls are routed:
+//   live (default) — shells out to the `claude` CLI, uses local Claude account, no API key needed
+//   mock           — deterministic stub responses for tests (no LLM calls)
+//   api            — direct fetch to api.anthropic.com using ANTHROPIC_API_KEY
+
+const AI_MODE = (process.env.VITE_AI_MODE ?? "live").toLowerCase();
 
 const API_URL = "https://api.anthropic.com/v1/messages";
 
-function getHeaders(): Record<string, string> {
+function getApiHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "anthropic-version": "2023-06-01",
   };
-
-  // Server mode: include API key. Artifact mode: proxy handles auth.
-  const apiKey = typeof process !== "undefined" ? process.env?.ANTHROPIC_API_KEY : undefined;
-  if (apiKey) {
-    headers["x-api-key"] = apiKey;
-  }
-
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (apiKey) headers["x-api-key"] = apiKey;
   return headers;
 }
 
-// Track call count for debug
 let callCount = 0;
 
 export async function callAgent(
@@ -70,93 +71,276 @@ export async function callAgent(
   callCount++;
   const callId = callCount;
 
-  // Debug: log tool selection and config
   const promptChars = systemPrompt.length;
   const msgChars = JSON.stringify(messages).length;
   const toolNames = tools?.map((t) => t.name) ?? [];
 
-  const callInfo = {
-    callId,
-    model,
-    maxTokens,
-    systemChars: promptChars,
-    messageChars: msgChars,
-    tools: toolNames,
-  };
+  const callInfo = { callId, model, maxTokens, systemChars: promptChars, messageChars: msgChars, tools: toolNames, mode: AI_MODE };
   const toolDesc = toolNames.length > 0 ? `tools=[${toolNames.join(", ")}]` : "mode=prompt-only (no tool-use)";
-  // Extract first line of system prompt as summary
   const promptSummary = systemPrompt.split("\n").find((l) => l.trim().length > 0)?.trim().slice(0, 80) ?? "?";
   console.log(
-    `[llm #${callId}] → model=${model} max_tokens=${maxTokens} ` +
-    `system=${promptChars}ch messages=${msgChars}ch ` +
-    `${toolDesc}\n    prompt: "${promptSummary}..."`
+    `[llm #${callId}] → mode=${AI_MODE} model=${model} max_tokens=${maxTokens} ` +
+    `system=${promptChars}ch messages=${msgChars}ch ${toolDesc}\n    prompt: "${promptSummary}..."`
   );
   broadcastSSE("llm-call", { ...callInfo, toolDesc, promptSummary });
 
-  const body: Record<string, unknown> = {
-    model,
-    max_tokens: maxTokens,
-    system: systemPrompt,
-    messages,
-  };
-  if (tools && tools.length > 0) {
-    body.tools = tools;
-  }
-
   const startTime = Date.now();
-  const res = await fetch(API_URL, {
-    method: "POST",
-    headers: getHeaders(),
-    body: JSON.stringify(body),
-  });
+  let response: AgentResponse;
+  try {
+    if (AI_MODE === "mock") {
+      response = callMock(systemPrompt, messages, tools);
+    } else if (AI_MODE === "api") {
+      response = await callApi(systemPrompt, messages, tools, model, maxTokens);
+    } else {
+      response = await callCli(systemPrompt, messages, tools, model, maxTokens);
+    }
+  } catch (err) {
+    const elapsed = Date.now() - startTime;
+    console.log(`[llm #${callId}] ✗ ${elapsed}ms: ${(err as Error).message.slice(0, 200)}`);
+    throw err;
+  }
 
   const elapsed = Date.now() - startTime;
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.log(`[llm #${callId}] ✗ ${res.status} after ${elapsed}ms: ${err.slice(0, 200)}`);
-    throw new Error(`Anthropic API error ${res.status}: ${err}`);
-  }
-
-  const data = (await res.json()) as ApiResponse & { usage?: { input_tokens?: number; output_tokens?: number } };
-
-  const text = data.content
-    .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-
-  const toolCalls = data.content
-    .filter(
-      (block): block is Extract<ContentBlock, { type: "tool_use" }> =>
-        block.type === "tool_use"
-    )
-    .map((block) => ({
-      id: block.id,
-      name: block.name,
-      input: block.input as Record<string, unknown>,
-    }));
-
-  const inputTokens = data.usage?.input_tokens ?? 0;
-  const outputTokens = data.usage?.output_tokens ?? 0;
-  const toolCallNames = toolCalls.map((t) => t.name);
-
-  const resultInfo = {
-    callId,
-    elapsed,
-    inputTokens,
-    outputTokens,
-    stopReason: data.stop_reason,
-    textLength: text.length,
-    toolCalls: toolCallNames,
-  };
+  const toolCallNames = response.toolCalls.map((t) => t.name);
   console.log(
-    `[llm #${callId}] ← ${elapsed}ms | ${inputTokens} in / ${outputTokens} out | ` +
-    `stop=${data.stop_reason} | text=${text.length}ch` +
+    `[llm #${callId}] ← ${elapsed}ms | stop=${response.stopReason} | text=${response.text.length}ch` +
     (toolCallNames.length > 0 ? ` | tool_calls=[${toolCallNames.join(", ")}]` : "")
   );
-  broadcastSSE("llm-result", resultInfo);
+  broadcastSSE("llm-result", { callId, elapsed, stopReason: response.stopReason, textLength: response.text.length, toolCalls: toolCallNames });
+
+  return response;
+}
+
+// --- API mode (direct fetch) ---
+
+async function callApi(
+  systemPrompt: string,
+  messages: MessageParam[],
+  tools: Tool[] | undefined,
+  model: string,
+  maxTokens: number
+): Promise<AgentResponse> {
+  const body: Record<string, unknown> = { model, max_tokens: maxTokens, system: systemPrompt, messages };
+  if (tools && tools.length > 0) body.tools = tools;
+
+  const res = await fetch(API_URL, { method: "POST", headers: getApiHeaders(), body: JSON.stringify(body) });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Anthropic API error ${res.status}: ${err}`);
+  }
+  const data = (await res.json()) as ApiResponse;
+
+  const text = data.content
+    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+  const toolCalls = data.content
+    .filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use")
+    .map((b) => ({ id: b.id, name: b.name, input: b.input as Record<string, unknown> }));
 
   return { text, toolCalls, stopReason: data.stop_reason };
+}
+
+// --- Live mode (claude CLI) ---
+
+function modelToCliAlias(model: string): string {
+  const m = model.toLowerCase();
+  if (m.includes("opus")) return "opus";
+  if (m.includes("haiku")) return "haiku";
+  return "sonnet";
+}
+
+const TOOL_PROTOCOL_HEADER = `# CRITICAL: Tool Invocation Protocol
+
+You are running inside an automated harness. The ONLY way for tools to actually execute is for you to emit them in the \`tool_calls\` array of your JSON response. The harness will then execute each tool and feed the results back to you in the next turn as \`<tool_result>\` blocks.
+
+**You cannot run tools yourself. You cannot pretend you ran them.** Listing them in \`text\` does nothing. Only entries in \`tool_calls\` are executed.
+
+Each turn you respond with this exact JSON shape:
+{"text": "<your reasoning, optional>", "tool_calls": [{"name": "<tool>", "input": {...}}, ...]}
+
+- To run one or more tools this turn: put them in \`tool_calls\`.
+- When you are completely finished and want to stop: emit \`{"text": "<final answer>", "tool_calls": []}\`. Empty \`tool_calls\` ends the loop.
+- Never describe in \`text\` what tools you "would" call. If you want it run, put it in \`tool_calls\`.
+
+Available tools:
+{TOOLS_JSON}
+
+`;
+
+function serializeMessages(messages: MessageParam[]): string {
+  return messages
+    .map((m) => {
+      if (typeof m.content === "string") {
+        return `[${m.role}]\n${m.content}`;
+      }
+      const parts = m.content.map((block) => {
+        if ("type" in block && block.type === "tool_use") {
+          return `<tool_use name="${block.name}" id="${block.id}">${JSON.stringify(block.input)}</tool_use>`;
+        }
+        if ("type" in block && block.type === "tool_result") {
+          return `<tool_result for="${block.tool_use_id}">${block.content}</tool_result>`;
+        }
+        if ("type" in block && block.type === "text") {
+          return block.text;
+        }
+        return JSON.stringify(block);
+      });
+      return `[${m.role}]\n${parts.join("\n")}`;
+    })
+    .join("\n\n");
+}
+
+function stripJsonFences(text: string): string {
+  let t = text.trim();
+  if (t.startsWith("```")) t = t.replace(/^```(?:json)?\n?/, "").replace(/\n?```\s*$/, "");
+  return t.trim();
+}
+
+async function callCli(
+  systemPrompt: string,
+  messages: MessageParam[],
+  tools: Tool[] | undefined,
+  model: string,
+  _maxTokens: number
+): Promise<AgentResponse> {
+  const hasTools = !!(tools && tools.length > 0);
+  // Put the protocol FIRST so it dominates the system prompt and isn't lost at the tail of long agent prompts.
+  const fullSystem = hasTools
+    ? TOOL_PROTOCOL_HEADER.replace("{TOOLS_JSON}", JSON.stringify(tools, null, 2)) + systemPrompt
+    : systemPrompt;
+
+  const userPrompt = serializeMessages(messages);
+
+  const args = [
+    "--print",
+    "--model", modelToCliAlias(model),
+    "--system-prompt", fullSystem,
+    "--output-format", "json",
+    "--tools", "",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+  ];
+
+  // When tools are in play, constrain the response to the envelope schema so
+  // the model can't drift back into prose. Without this, larger system prompts
+  // (e.g. game-agent) cause it to narrate a plan instead of emitting tool calls.
+  if (hasTools) {
+    const envelopeSchema = {
+      type: "object",
+      properties: {
+        text: { type: "string" },
+        tool_calls: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              input: { type: "object" },
+            },
+            required: ["name", "input"],
+          },
+        },
+      },
+      required: ["text", "tool_calls"],
+    };
+    args.push("--json-schema", JSON.stringify(envelopeSchema));
+  }
+
+  const stdout = await runClaudeCli(args, userPrompt);
+
+  let parsed: { result?: string; is_error?: boolean; stop_reason?: string };
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error(`claude CLI returned non-JSON: ${stdout.slice(0, 200)}`);
+  }
+
+  if (parsed.is_error) {
+    throw new Error(`claude CLI error: ${parsed.result ?? "unknown"}`);
+  }
+
+  const rawText = parsed.result ?? "";
+
+  if (!hasTools) {
+    return { text: rawText, toolCalls: [], stopReason: parsed.stop_reason ?? "end_turn" };
+  }
+
+  // Parse the tool-use protocol envelope
+  let envelope: { text?: string; tool_calls?: Array<{ name: string; input: Record<string, unknown> }> };
+  try {
+    envelope = JSON.parse(stripJsonFences(rawText));
+  } catch {
+    // Model didn't follow protocol — treat as final text
+    return { text: rawText, toolCalls: [], stopReason: "end_turn" };
+  }
+
+  const toolCalls = (envelope.tool_calls ?? []).map((tc, i) => ({
+    id: `cli_tool_${Date.now()}_${i}`,
+    name: tc.name,
+    input: tc.input ?? {},
+  }));
+
+  return {
+    text: envelope.text ?? "",
+    toolCalls,
+    stopReason: toolCalls.length > 0 ? "tool_use" : "end_turn",
+  };
+}
+
+function runClaudeCli(args: string[], stdinData: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // Strip ANTHROPIC_API_KEY so the CLI falls back to the user's local Claude account
+    // (OAuth / keychain). Otherwise an invalid or stale key in .env would cause 401.
+    const { ANTHROPIC_API_KEY: _omit, ...env } = process.env;
+    void _omit;
+    const proc = spawn("claude", args, { shell: false, windowsHide: true, env });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+    proc.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    proc.on("error", (err) => reject(new Error(`Failed to spawn claude CLI: ${err.message}`)));
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`claude CLI exited ${code}: ${stderr || stdout}`));
+        return;
+      }
+      resolve(stdout);
+    });
+    proc.stdin.write(stdinData);
+    proc.stdin.end();
+  });
+}
+
+// --- Mock mode ---
+
+function callMock(
+  systemPrompt: string,
+  _messages: MessageParam[],
+  tools: Tool[] | undefined
+): AgentResponse {
+  // Tool agents: call `finalize` if available so loops terminate, else first tool with empty input
+  if (tools && tools.length > 0) {
+    const terminator = tools.find((t) => /finalize|done|complete/i.test(t.name)) ?? tools[0];
+    return {
+      text: "",
+      toolCalls: [
+        {
+          id: `mock_${Date.now()}`,
+          name: terminator.name,
+          input: { reasoning: "mock", summary: "mock", roomCount: 1 },
+        },
+      ],
+      stopReason: "tool_use",
+    };
+  }
+
+  // Heuristic: if the system prompt asks for JSON, return an empty object so callers fall through to their fallback paths
+  if (/json/i.test(systemPrompt)) {
+    return { text: "{}", toolCalls: [], stopReason: "end_turn" };
+  }
+  return { text: "[mock response]", toolCalls: [], stopReason: "end_turn" };
 }
 
 // Run a full agent loop: call -> tool use -> tool result -> call again until done
@@ -175,7 +359,6 @@ export async function runAgentLoop(
   let finalText = "";
 
   for (let i = 0; i < 10; i++) {
-    // max 10 iterations
     const response = await callAgent(
       systemPrompt,
       conversationMessages,
@@ -189,37 +372,22 @@ export async function runAgentLoop(
       break;
     }
 
-    // Build the assistant message with all content blocks
     const assistantContent: ContentBlock[] = [];
-
     if (response.text) {
       assistantContent.push({ type: "text", text: response.text });
     }
     for (const tc of response.toolCalls) {
-      assistantContent.push({
-        type: "tool_use",
-        id: tc.id,
-        name: tc.name,
-        input: tc.input,
-      });
+      assistantContent.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
     }
-
     conversationMessages.push({ role: "assistant", content: assistantContent });
 
-    // Execute tools and build results
     const toolResults: ToolResultBlockParam[] = [];
     for (const tc of response.toolCalls) {
       const result = await Promise.resolve(executeToolFn(tc.name, tc.input));
-      toolResults.push({
-        type: "tool_result" as const,
-        tool_use_id: tc.id,
-        content: JSON.stringify(result),
-      });
+      toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: JSON.stringify(result) });
     }
-
     conversationMessages.push({ role: "user", content: toolResults });
 
-    // If stop reason was end_turn with text, we're done
     if (response.stopReason === "end_turn" && response.text) {
       finalText = response.text;
       break;

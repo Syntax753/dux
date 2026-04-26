@@ -13,7 +13,18 @@
       "Bash(tasklist)",
       "Bash(npm uninstall:*)",
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'Rooms: {d[\\\\\"level\\\\\"][\\\\\"rooms\\\\\"]}'\\); conns=d['level']['spatialMap']['connections']; print\\(f'Connections: {len\\(conns\\)}'\\); [print\\(f'  {c[\\\\\"fromRoomId\\\\\"]} --{c[\\\\\"direction\\\\\"]}--> {c[\\\\\"toRoomId\\\\\"]}'\\) for c in conns]\")",
-      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\('Rooms:',j.level.rooms\\);const c=j.level.spatialMap.connections;console.log\\('Connections:',c.length\\);c.forEach\\(x=>console.log\\(' ',x.fromRoomId,'->',x.toRoomId,'\\(',x.direction,'\\)'\\)\\);console.log\\('Segments:',j.level.spatialMap.corridorSegments?.length??0\\)}\\)\")"
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\('Rooms:',j.level.rooms\\);const c=j.level.spatialMap.connections;console.log\\('Connections:',c.length\\);c.forEach\\(x=>console.log\\(' ',x.fromRoomId,'->',x.toRoomId,'\\(',x.direction,'\\)'\\)\\);console.log\\('Segments:',j.level.spatialMap.corridorSegments?.length??0\\)}\\)\")",
+      "Bash(claude --print --bare --output-format json --tools \"\" --model haiku)",
+      "Bash(claude --print --output-format json --tools \"\" --model haiku)",
+      "Bash(claude --print --output-format json --tools \"\" --model haiku --system-prompt \"You are a terse assistant.\")",
+      "Bash(claude --print --output-format json --tools \"\" --model haiku --system-prompt \"You are an LLM endpoint. Reply with a JSON object only.\" --no-session-persistence)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('RESULT:', d.get\\('result',''\\)[:500]\\)\")",
+      "Bash(claude --print --output-format json --tools \"\" --strict-mcp-config --disable-slash-commands --model haiku --system-prompt \"Reply ONLY with valid JSON.\" --no-session-persistence)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('RESULT:', d.get\\('result',''\\)[:600]\\)\")",
+      "Bash(where claude *)",
+      "Bash(VITE_AI_MODE=live npx tsx C:/Users/synt_/dev/dux/smoke-llm.mts)",
+      "Bash(VITE_AI_MODE=mock npx tsx C:/Users/synt_/dev/dux/smoke-llm.mts)",
+      "Bash(cat > *smoke*.mts << 'EOF':*)"
     ]
   }
 }
