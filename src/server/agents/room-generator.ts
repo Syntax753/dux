@@ -64,7 +64,7 @@ ${roomDescriptions}
 
 Remember: hidden objects (those in "reveals") should be hinted at but not explicitly described. Visible objects should be clearly present. Exits should be referenced naturally in each scene.`;
 
-  const response = await callAgent(ROOM_GENERATOR_SYSTEM, [
+  const response = await callAgent("room-generator", ROOM_GENERATOR_SYSTEM, [
     { role: "user", content: userMessage },
   ]);
 

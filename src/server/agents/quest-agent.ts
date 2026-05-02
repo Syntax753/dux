@@ -48,6 +48,7 @@ Generate 1 main quest + ${Math.min(3, Math.max(1, level.rooms.length - 2))} side
 
   try {
     const response = await callAgent(
+      "quest-agent",
       QUEST_AGENT_SYSTEM,
       [{ role: "user", content: userMessage }],
       undefined,

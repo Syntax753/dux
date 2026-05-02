@@ -51,7 +51,7 @@ Inventory: ${context.inventory.length > 0 ? context.inventory.join(", ") : "empt
 
 Event: ${eventDesc}`;
 
-  const response = await callAgent(NARRATOR_SYSTEM, [
+  const response = await callAgent("narrator", NARRATOR_SYSTEM, [
     { role: "user", content: userMessage },
   ]);
 

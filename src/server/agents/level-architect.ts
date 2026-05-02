@@ -22,7 +22,7 @@ Start room: ${level.start_room}
 Rooms:
 ${roomDescs}`;
 
-  const response = await callAgent(LEVEL_ARCHITECT_SYSTEM, [
+  const response = await callAgent("level-architect", LEVEL_ARCHITECT_SYSTEM, [
     { role: "user", content: userMessage },
   ]);
 

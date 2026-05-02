@@ -152,6 +152,12 @@ routes.GET["/api/levels"] = async (_req, res) => {
   json(res, 200, { levels });
 };
 
+// In-flight dedup: while one /api/game/start is running for a given key, a
+// second concurrent request joins the same Promise instead of starting another
+// pipeline. Stops the "user clicks Start three times → 3 parallel pipelines"
+// problem we saw saturating the local Claude CLI.
+const inFlightStarts = new Map<string, Promise<unknown>>();
+
 routes.POST["/api/game/start"] = async (req, res) => {
   const body = (await readBody(req)) as { levelId?: string; roomCount?: number };
 
@@ -161,11 +167,54 @@ routes.POST["/api/game/start"] = async (req, res) => {
   if (body.levelId) {
     level = getLevel(body.levelId);
     if (!level) { json(res, 404, { error: `Level "${body.levelId}" not found` }); return; }
+    const yamlKey = `yaml:${body.levelId}`;
+    if (inFlightStarts.has(yamlKey)) {
+      console.log(`[game/start] ⊘ rejected — already starting ${yamlKey}`);
+      json(res, 429, { error: `Level "${body.levelId}" is already being started — please wait.` });
+      return;
+    }
+    // Mark in-flight; cleared at the end of the YAML branch below.
+    let yamlResolve: () => void = () => {};
+    const yamlPromise = new Promise<void>((r) => { yamlResolve = r; });
+    inFlightStarts.set(yamlKey, yamlPromise);
+    res.on("close", () => { yamlResolve(); inFlightStarts.delete(yamlKey); });
   } else {
-    // Use the game-agent to orchestrate the entire pipeline
     const roomCount = Math.max(1, Math.min(50, body.roomCount ?? 5));
+    const key = `procedural:${roomCount}`;
+    const existing = inFlightStarts.get(key);
+    if (existing) {
+      console.log(`[game/start] ⊘ deduped — joining in-flight ${key}`);
+      try {
+        const result = (await existing) as Awaited<ReturnType<typeof runGameAgent>>;
+        const state = result.state;
+        let totalSteps = 0;
+        for (const r of state.level.rooms) totalSteps += r.chain.length;
+        json(res, 200, {
+          sessionId: state.sessionId,
+          level: {
+            id: state.level.id, title: state.level.title, rooms: state.level.rooms.length, steps: totalSteps,
+            spatialMap: state.spatialMap,
+            roomSizes: state.level.rooms.map((r) => ({ roomId: r.id, width: r.width, height: r.height })),
+            roomCategories: Object.fromEntries(state.level.rooms.map((r) => [r.id, r.category])),
+          },
+          currentRoom: buildClientRoomData(state, state.level.start_room),
+          narrative: result.narrative,
+          quests: state.quests.map((q) => ({ id: q.id, title: q.title, description: q.description, type: q.type, isMain: q.isMain, steps: q.steps, completed: q.completed })),
+          trace: result.trace,
+          deduped: true,
+        });
+      } catch (err) {
+        json(res, 500, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    const promise = runGameAgent(roomCount);
+    inFlightStarts.set(key, promise);
+    promise.finally(() => { if (inFlightStarts.get(key) === promise) inFlightStarts.delete(key); });
+
     try {
-      const result = await runGameAgent(roomCount);
+      const result = await promise;
       const state = result.state;
 
       let totalSteps = 0;
@@ -209,7 +258,7 @@ routes.POST["/api/game/start"] = async (req, res) => {
       return result;
     })();
 
-    const [generated, spatialMap, levelStyle, quests] = await Promise.all([
+    const [generated, spatialMap, levelStyle] = await Promise.all([
       (async () => {
         const span = tracer.startSpan("room-generator", `Generating scenes for ${level.rooms.length} rooms`, phase1Span.id, `Level "${level.title}" has ${level.rooms.length} room(s). Need text descriptions and entity lists for each room.`);
         const result = await generateRooms(level);
@@ -218,7 +267,7 @@ routes.POST["/api/game/start"] = async (req, res) => {
       })(),
       spatialMapPromise,
       (async () => {
-        const span = tracer.startSpan("style-agent", `Unified palette for "${level.title}"`, phase1Span.id, `Theme: "${level.theme}", mood: "${level.mood}". Generating color palette for all rooms.`);
+        const span = tracer.startSpan("style-agent", `Unified palette for "${level.title}"`, phase1Span.id, `Theme: "${level.theme}", mood: "${level.mood}". Deterministic palette lookup — no LLM.`);
         const result = await generateLevelStyle(level);
         const tileSpan = tracer.startSpan("tile-artist", `Shared tileset`, phase1Span.id, `Programmatic tiles from palette — instant, no LLM.`);
         state.levelTileSet = generateLevelTiles(result);
@@ -226,20 +275,20 @@ routes.POST["/api/game/start"] = async (req, res) => {
         tracer.endSpan(span.id, result);
         return result;
       })(),
-      (async () => {
-        const span = tracer.startSpan("quest-agent", `Generating quests for "${level.title}"`, phase1Span.id, `Creating main quest + side quests that span multiple rooms to encourage exploration.`);
-        const result = await generateQuests(level);
-        tracer.endSpan(span.id, { questCount: result.length, main: result.filter((q) => q.isMain).length });
-        return result;
-      })(),
     ]);
 
     tracer.endSpan(phase1Span.id);
 
+    // Quests in background — don't block start response
+    const questsTracer = new Tracer("background-quests", `Quests for "${level.title}"`, "server", tracer.traceId);
+    generateQuests(level)
+      .then((qs) => { state.quests = qs; setSession(state); console.log(`[background] ✓ ${qs.length} quests ready`); questsTracer.finish(); })
+      .catch((err) => { console.error(`[background] ✗ quests:`, err); questsTracer.finish(); });
+
     // Store results
     state.spatialMap = spatialMap;
     state.levelStyle = levelStyle;
-    state.quests = quests;
+    state.quests = [];
     for (const room of level.rooms) {
       const data = generated.rooms[room.id];
       if (data) state.rooms.get(room.id)!.scene = data.scene;

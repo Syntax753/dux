@@ -68,7 +68,7 @@ Chain: [{ "id": "step_id", "verb": "LOOK|GET|USE|OPEN", "target": "obj_id", "on"
 
   try {
     agentLog.call(logCtx, "llm/claude-sonnet", `Creative content for ${roomCount} rooms (max_tokens=${maxTokens})`);
-    const response = await callAgent(LEVEL_GENERATOR_SYSTEM, [{ role: "user", content: userMessage }], undefined, undefined, maxTokens);
+    const response = await callAgent("level-generator", LEVEL_GENERATOR_SYSTEM, [{ role: "user", content: userMessage }], undefined, undefined, maxTokens);
     let text = response.text.trim();
     if (text.startsWith("```")) text = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
     const parsed = JSON.parse(text);

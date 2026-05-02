@@ -61,7 +61,26 @@ function getApiHeaders(): Record<string, string> {
 
 let callCount = 0;
 
+function preview(s: string, n: number = 220): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > n ? flat.slice(0, n) + "…" : flat;
+}
+
+function lastUserMessage(messages: MessageParam[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    if (typeof m.content === "string") return m.content;
+    const text = m.content
+      .map((b) => ("type" in b && b.type === "text" ? b.text : ""))
+      .join(" ");
+    if (text.trim()) return text;
+  }
+  return "";
+}
+
 export async function callAgent(
+  caller: string,
   systemPrompt: string,
   messages: MessageParam[],
   tools?: Tool[],
@@ -71,18 +90,26 @@ export async function callAgent(
   callCount++;
   const callId = callCount;
 
-  const promptChars = systemPrompt.length;
+  const systemChars = systemPrompt.length;
   const msgChars = JSON.stringify(messages).length;
   const toolNames = tools?.map((t) => t.name) ?? [];
+  const toolDesc = toolNames.length > 0 ? `tools=[${toolNames.join(", ")}]` : "tools=none";
 
-  const callInfo = { callId, model, maxTokens, systemChars: promptChars, messageChars: msgChars, tools: toolNames, mode: AI_MODE };
-  const toolDesc = toolNames.length > 0 ? `tools=[${toolNames.join(", ")}]` : "mode=prompt-only (no tool-use)";
-  const promptSummary = systemPrompt.split("\n").find((l) => l.trim().length > 0)?.trim().slice(0, 80) ?? "?";
+  const sysPrev = preview(systemPrompt);
+  const userPrev = preview(lastUserMessage(messages));
+
   console.log(
-    `[llm #${callId}] → mode=${AI_MODE} model=${model} max_tokens=${maxTokens} ` +
-    `system=${promptChars}ch messages=${msgChars}ch ${toolDesc}\n    prompt: "${promptSummary}..."`
+    `[llm #${callId} ▶ ${caller}] mode=${AI_MODE} model=${model} max_tokens=${maxTokens} ` +
+    `system=${systemChars}ch messages=${msgChars}ch ${toolDesc}\n` +
+    `    system › "${sysPrev}"\n` +
+    `    user   › "${userPrev}"`
   );
-  broadcastSSE("llm-call", { ...callInfo, toolDesc, promptSummary });
+  broadcastSSE("llm-call", {
+    callId, caller, model, maxTokens,
+    systemChars, messageChars: msgChars,
+    tools: toolNames, mode: AI_MODE,
+    systemPreview: sysPrev, userPreview: userPrev,
+  });
 
   const startTime = Date.now();
   let response: AgentResponse;
@@ -96,17 +123,25 @@ export async function callAgent(
     }
   } catch (err) {
     const elapsed = Date.now() - startTime;
-    console.log(`[llm #${callId}] ✗ ${elapsed}ms: ${(err as Error).message.slice(0, 200)}`);
+    const errMsg = (err as Error).message.slice(0, 200);
+    console.log(`[llm #${callId} ✗ ${caller}] ${elapsed}ms: ${errMsg}`);
+    broadcastSSE("llm-error", { callId, caller, elapsed, error: errMsg });
     throw err;
   }
 
   const elapsed = Date.now() - startTime;
   const toolCallNames = response.toolCalls.map((t) => t.name);
+  const respPrev = preview(response.text);
+  const tcSummary = toolCallNames.length > 0 ? ` tool_calls=[${toolCallNames.join(", ")}]` : "";
   console.log(
-    `[llm #${callId}] ← ${elapsed}ms | stop=${response.stopReason} | text=${response.text.length}ch` +
-    (toolCallNames.length > 0 ? ` | tool_calls=[${toolCallNames.join(", ")}]` : "")
+    `[llm #${callId} ◀ ${caller}] ${elapsed}ms stop=${response.stopReason} text=${response.text.length}ch${tcSummary}\n` +
+    `    response › "${respPrev}"`
   );
-  broadcastSSE("llm-result", { callId, elapsed, stopReason: response.stopReason, textLength: response.text.length, toolCalls: toolCallNames });
+  broadcastSSE("llm-result", {
+    callId, caller, elapsed, stopReason: response.stopReason,
+    textLength: response.text.length, toolCalls: toolCallNames,
+    responsePreview: respPrev,
+  });
 
   return response;
 }
@@ -345,6 +380,7 @@ function callMock(
 
 // Run a full agent loop: call -> tool use -> tool result -> call again until done
 export async function runAgentLoop(
+  caller: string,
   systemPrompt: string,
   messages: MessageParam[],
   tools: Tool[],
@@ -360,6 +396,7 @@ export async function runAgentLoop(
 
   for (let i = 0; i < 10; i++) {
     const response = await callAgent(
+      `${caller}#${i + 1}`,
       systemPrompt,
       conversationMessages,
       tools,

@@ -10,7 +10,7 @@ import { generateRooms, type RoomGeneratorOutput } from "./room-generator.js";
 import { generateLevelStyle } from "./style-agent.js";
 import { generateLevelTiles } from "./tile-artist.js";
 import { designRoom } from "./room-designer.js";
-import { generateQuests, type Quest } from "./quest-agent.js";
+import { generateQuests } from "./quest-agent.js";
 import { narrate } from "./narrator.js";
 import { createGameState, populateEntities } from "../models/game-state.js";
 import { setSession } from "../services/session-store.js";
@@ -41,9 +41,8 @@ export async function runGameAgent(roomCount: number): Promise<GameAgentResult> 
   tracer.endSpan(levelSpan.id, { title: level.title, rooms: level.rooms.length, theme: level.theme });
   agentLog.result(ctx, "level-generator", `"${level.title}" — ${level.rooms.length} rooms, theme: ${level.theme}`);
 
-  // --- Phase 2: scenes, style+tiles, and quests in parallel ---
-  // All three only need the level definition. tile-artist runs as soon as style resolves.
-  const phase2Span = tracer.startSpan("phase-2", "Parallel: scenes + style/tiles + quests", tracer.rootId, "Three independent agents — all need only the level definition.");
+  // --- Phase 2: scenes + style/tiles in parallel (quests deferred to background) ---
+  const phase2Span = tracer.startSpan("phase-2", "Parallel: scenes + style/tiles", tracer.rootId, "Two independent steps — quest-agent now runs in background after the player has entered.");
 
   const scenesPromise: Promise<RoomGeneratorOutput> = (async () => {
     const span = tracer.startSpan("room-generator", `Scenes for ${level.rooms.length} rooms`, phase2Span.id, "Generating scene text + entity lists for every room.");
@@ -55,7 +54,7 @@ export async function runGameAgent(roomCount: number): Promise<GameAgentResult> 
   })();
 
   const stylePromise: Promise<{ style: RoomStyle; tileSet: TileSet }> = (async () => {
-    const span = tracer.startSpan("style-agent", `Palette for "${level.title}"`, phase2Span.id, `Theme: "${level.theme}", mood: "${level.mood}". Producing the unified palette.`);
+    const span = tracer.startSpan("style-agent", `Palette for "${level.title}"`, phase2Span.id, `Theme: "${level.theme}", mood: "${level.mood}". Deterministic palette lookup — no LLM.`);
     agentLog.call(ctx, "style-agent", `Palette for "${level.title}"`);
     const style = await generateLevelStyle(level);
     tracer.endSpan(span.id, style);
@@ -68,19 +67,9 @@ export async function runGameAgent(roomCount: number): Promise<GameAgentResult> 
     return { style, tileSet };
   })();
 
-  const questsPromise: Promise<Quest[]> = (async () => {
-    const span = tracer.startSpan("quest-agent", `Quests for "${level.title}"`, phase2Span.id, "Main + side quests spanning multiple rooms to encourage exploration.");
-    agentLog.call(ctx, "quest-agent", `Quests for "${level.title}"`);
-    const result = await generateQuests(level);
-    tracer.endSpan(span.id, { count: result.length });
-    agentLog.result(ctx, "quest-agent", `${result.length} quests generated`);
-    return result;
-  })();
-
-  const [generated, { style: levelStyle, tileSet: levelTileSet }, quests] = await Promise.all([
+  const [generated, { style: levelStyle, tileSet: levelTileSet }] = await Promise.all([
     scenesPromise,
     stylePromise,
-    questsPromise,
   ]);
   tracer.endSpan(phase2Span.id);
 
@@ -89,7 +78,7 @@ export async function runGameAgent(roomCount: number): Promise<GameAgentResult> 
   const state = createGameState(sessionId, level);
   state.levelStyle = levelStyle;
   state.levelTileSet = levelTileSet;
-  state.quests = quests;
+  state.quests = [];
 
   for (const room of level.rooms) {
     const data = generated.rooms[room.id];
@@ -158,7 +147,7 @@ export async function runGameAgent(roomCount: number): Promise<GameAgentResult> 
   for (const [roomId, rd] of Object.entries(generated.rooms)) entityMap[roomId] = rd.entities;
   populateEntities(state, entityMap);
 
-  // --- Phase 4: background — design remaining room layouts (don't await) ---
+  // --- Phase 4: background — design remaining room layouts + generate quests (don't await) ---
   const otherRooms = level.rooms.filter((r) => r.id !== level.start_room);
   if (otherRooms.length > 0) {
     const bgSpan = tracer.startSpan("background", `Queued ${otherRooms.length} room layout(s)`, tracer.rootId, `Other rooms generated in the background while the player explores the start room.`);
@@ -175,8 +164,14 @@ export async function runGameAgent(roomCount: number): Promise<GameAgentResult> 
     }
   }
 
+  // Quests generate in the background — not blocking start response
+  const questsTracer = new Tracer("background-quests", `Quests for "${level.title}"`, "server", tracer.traceId);
+  generateQuests(level)
+    .then((qs) => { state.quests = qs; setSession(state); console.log(`[background] ✓ ${qs.length} quests ready`); questsTracer.finish(); })
+    .catch((err) => { console.error(`[background] ✗ quests:`, err); questsTracer.finish(); });
+
   setSession(state);
-  agentLog.done(ctx, `"${level.title}" — ${level.rooms.length} rooms, ${quests.length} quests`, Date.now() - startedAt);
+  agentLog.done(ctx, `"${level.title}" — ${level.rooms.length} rooms (quests pending)`, Date.now() - startedAt);
 
   return { state, narrative, trace: tracer.finish() };
 }
