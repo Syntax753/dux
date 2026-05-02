@@ -5,7 +5,7 @@ import { getSession, setSession } from "./services/session-store.js";
 import { createGameState } from "./models/game-state.js";
 import { Tracer, addSSEClient } from "./services/tracer.js";
 import { responseCache, ResponseCache } from "./services/response-cache.js";
-import { generateRooms, type RoomGeneratorOutput } from "./agents/room-generator.js";
+import { generateRoomsForLevel, type RoomGeneratorOutput } from "./agents/room-generator.js";
 import { planSpatialLayout } from "./agents/level-architect.js";
 import { generateLevelStyle } from "./agents/style-agent.js";
 import { designRoom, type RoomDesignOptions } from "./agents/room-designer.js";
@@ -260,8 +260,8 @@ routes.POST["/api/game/start"] = async (req, res) => {
 
     const [generated, spatialMap, levelStyle] = await Promise.all([
       (async () => {
-        const span = tracer.startSpan("room-generator", `Generating scenes for ${level.rooms.length} rooms`, phase1Span.id, `Level "${level.title}" has ${level.rooms.length} room(s). Need text descriptions and entity lists for each room.`);
-        const result = await generateRooms(level);
+        const span = tracer.startSpan("room-generator", `Start-room scene + derive ${level.rooms.length - 1} others`, phase1Span.id, `LLM call only for the start room of "${level.title}". Other rooms derived deterministically from puzzle chain.`);
+        const result = await generateRoomsForLevel(level);
         tracer.endSpan(span.id, { roomCount: Object.keys(result.rooms).length });
         return result;
       })(),

@@ -95,20 +95,23 @@ export async function callAgent(
   const toolNames = tools?.map((t) => t.name) ?? [];
   const toolDesc = toolNames.length > 0 ? `tools=[${toolNames.join(", ")}]` : "tools=none";
 
+  const userText = lastUserMessage(messages);
   const sysPrev = preview(systemPrompt);
-  const userPrev = preview(lastUserMessage(messages));
+  const userPrev = preview(userText);
 
   console.log(
     `[llm #${callId} ▶ ${caller}] mode=${AI_MODE} model=${model} max_tokens=${maxTokens} ` +
-    `system=${systemChars}ch messages=${msgChars}ch ${toolDesc}\n` +
-    `    system › "${sysPrev}"\n` +
-    `    user   › "${userPrev}"`
+    `system=${systemChars}ch messages=${msgChars}ch ${toolDesc}`
   );
+  console.log(`[llm #${callId} ▶ ${caller}] ────── SYSTEM PROMPT ──────\n${systemPrompt}`);
+  console.log(`[llm #${callId} ▶ ${caller}] ────── USER PROMPT ──────\n${userText}`);
+  console.log(`[llm #${callId} ▶ ${caller}] ──────────────────────────`);
   broadcastSSE("llm-call", {
     callId, caller, model, maxTokens,
     systemChars, messageChars: msgChars,
     tools: toolNames, mode: AI_MODE,
     systemPreview: sysPrev, userPreview: userPrev,
+    systemPrompt, userPrompt: userText,
   });
 
   const startTime = Date.now();
@@ -134,13 +137,15 @@ export async function callAgent(
   const respPrev = preview(response.text);
   const tcSummary = toolCallNames.length > 0 ? ` tool_calls=[${toolCallNames.join(", ")}]` : "";
   console.log(
-    `[llm #${callId} ◀ ${caller}] ${elapsed}ms stop=${response.stopReason} text=${response.text.length}ch${tcSummary}\n` +
-    `    response › "${respPrev}"`
+    `[llm #${callId} ◀ ${caller}] ${elapsed}ms stop=${response.stopReason} text=${response.text.length}ch${tcSummary}`
   );
+  console.log(`[llm #${callId} ◀ ${caller}] ────── RESPONSE ──────\n${response.text}`);
+  console.log(`[llm #${callId} ◀ ${caller}] ──────────────────────`);
   broadcastSSE("llm-result", {
     callId, caller, elapsed, stopReason: response.stopReason,
     textLength: response.text.length, toolCalls: toolCallNames,
     responsePreview: respPrev,
+    response: response.text,
   });
 
   return response;

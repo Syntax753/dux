@@ -6,7 +6,7 @@ import type { LevelDefinition } from "../models/level.js";
 import type { GameState } from "../models/game-state.js";
 import type { RoomStyle, TileSet } from "../../shared/types.js";
 import { generateLevel, type GeneratedLevel } from "./level-generator.js";
-import { generateRooms, type RoomGeneratorOutput } from "./room-generator.js";
+import { generateRoomsForLevel, type RoomGeneratorOutput } from "./room-generator.js";
 import { generateLevelStyle } from "./style-agent.js";
 import { generateLevelTiles } from "./tile-artist.js";
 import { designRoom } from "./room-designer.js";
@@ -45,11 +45,11 @@ export async function runGameAgent(roomCount: number): Promise<GameAgentResult> 
   const phase2Span = tracer.startSpan("phase-2", "Parallel: scenes + style/tiles", tracer.rootId, "Two independent steps — quest-agent now runs in background after the player has entered.");
 
   const scenesPromise: Promise<RoomGeneratorOutput> = (async () => {
-    const span = tracer.startSpan("room-generator", `Scenes for ${level.rooms.length} rooms`, phase2Span.id, "Generating scene text + entity lists for every room.");
-    agentLog.call(ctx, "room-generator", `Scenes for ${level.rooms.length} rooms`);
-    const result = await generateRooms(level);
+    const span = tracer.startSpan("room-generator", `Start-room scene + derive ${level.rooms.length - 1} others`, phase2Span.id, "LLM call for the start room only; remaining rooms derived deterministically from the puzzle chain.");
+    agentLog.call(ctx, "room-generator", `Start-room scene + derive ${level.rooms.length - 1} others`);
+    const result = await generateRoomsForLevel(level);
     tracer.endSpan(span.id, { rooms: Object.keys(result.rooms).length });
-    agentLog.result(ctx, "room-generator", `${Object.keys(result.rooms).length} rooms with scenes`);
+    agentLog.result(ctx, "room-generator", `1 LLM scene + ${Object.keys(result.rooms).length - 1} derived`);
     return result;
   })();
 
