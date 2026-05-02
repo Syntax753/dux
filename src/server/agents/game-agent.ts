@@ -151,6 +151,7 @@ export async function runGameAgent(roomCount: number): Promise<GameAgentResult> 
   tracer.endSpan(phase3Span.id);
 
   state.roomLayouts.set(startRoom.id, layout);
+  state.rooms.get(startRoom.id)!.entryNarrative = narrative;
 
   // Populate entities for every room (start room gets grid positions, others default to 0,0 until their layout completes)
   const entityMap: Record<string, Array<{ id: string; name: string; description: string; portable: boolean }>> = {};

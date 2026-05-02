@@ -1,86 +1,22 @@
 import type { RoomDefinition } from "../models/level.js";
-import type { RoomLayout, RoomStyle } from "../../shared/types.js";
-import { callAgent } from "../services/llm-client.js";
-import { ROOM_DESIGNER_SYSTEM } from "../prompts/room-designer-system.js";
+import type { RoomLayout } from "../../shared/types.js";
 
 export interface RoomDesignOptions {
   isStartRoom?: boolean;
   isFinalRoom?: boolean;
 }
 
+// Deterministic room layout — no LLM call. Walls on perimeter, optional carved
+// corners for non-rectangular shapes, exits opened in the appropriate edges,
+// stairs in start/final rooms, entities placed on interior floor tiles.
 export async function designRoom(
   room: RoomDefinition,
-  scene: string,
+  _scene: string,
   visibleEntities: Array<{ id: string; name: string }>,
-  style: RoomStyle,
-  availableTileTypes: string[],
+  _style: unknown,
+  _availableTileTypes: string[],
   options: RoomDesignOptions = {}
 ): Promise<RoomLayout> {
-  const W = room.width;
-  const H = room.height;
-
-  const exits = room.exits
-    .map((e) => {
-      const locked = e.requires ? " (locked)" : "";
-      return `${e.direction} → ${e.to === "exit" ? "level exit" : e.to}${locked}`;
-    })
-    .join(", ");
-
-  const entities = visibleEntities
-    .map((e) => `- ${e.id} (${e.name})`)
-    .join("\n");
-
-  const stairsNote = options.isStartRoom
-    ? "\nPlace a stairs_up tile near the south wall (ascending staircase from previous level)."
-    : options.isFinalRoom
-    ? "\nPlace a stairs_down tile near the north wall (descending staircase to next level)."
-    : "";
-
-  const userMessage = `Design a ${W}x${H} grid layout for this room:
-
-Room: ${room.name}
-Size: ${W} wide × ${H} tall
-Scene: ${scene}
-Ambience: ${style.ambience}
-
-Exits: ${exits}
-
-Entities to place:
-${entities || "(none)"}
-
-Available tile types (use ONLY these): ${availableTileTypes.join(", ")}
-${stairsNote}
-Remember: the grid must be exactly ${W} columns × ${H} rows. Walls on perimeter. Make the room non-rectangular if possible (carve corners for L/T/cross shapes).`;
-
-  const response = await callAgent(
-    ROOM_DESIGNER_SYSTEM,
-    [{ role: "user", content: userMessage }],
-    undefined,
-    undefined,
-    2048
-  );
-
-  try {
-    let text = response.text.trim();
-    if (text.startsWith("```")) {
-      text = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-    }
-    const parsed = JSON.parse(text) as Omit<RoomLayout, "roomId">;
-    if (parsed.cells?.length !== H || parsed.cells[0]?.length !== W) {
-      console.warn(`[room-designer] Size mismatch for "${room.name}": expected ${W}x${H}, got ${parsed.cells?.[0]?.length}x${parsed.cells?.length}. Using fallback.`);
-      return generateFallbackLayout(room, visibleEntities, options);
-    }
-    return { ...parsed, roomId: room.id };
-  } catch {
-    return generateFallbackLayout(room, visibleEntities, options);
-  }
-}
-
-function generateFallbackLayout(
-  room: RoomDefinition,
-  entities: Array<{ id: string; name: string }>,
-  options: RoomDesignOptions
-): RoomLayout {
   const W = room.width;
   const H = room.height;
   const cells: RoomLayout["cells"] = [];
@@ -97,7 +33,6 @@ function generateFallbackLayout(
     cells.push(r);
   }
 
-  // Carve corners for non-rectangular shapes (rooms > 5x5)
   const carveW = Math.max(0, Math.floor(W / 3));
   const carveH = Math.max(0, Math.floor(H / 3));
   if (carveW > 0 && carveH > 0 && W > 5 && H > 5) {
@@ -119,7 +54,6 @@ function generateFallbackLayout(
     }
   }
 
-  // Place exits as floor openings (corridors handle connectivity)
   const gridExits: RoomLayout["exits"] = [];
   for (const exit of room.exits) {
     const midX = Math.floor(W / 2);
@@ -133,7 +67,6 @@ function generateFallbackLayout(
       default: x = midX; y = 0;
     }
     cells[y][x] = "floor";
-    // Clear inward path
     const dx = exit.direction === "east" ? -1 : exit.direction === "west" ? 1 : 0;
     const dy = exit.direction === "south" ? -1 : exit.direction === "north" ? 1 : 0;
     for (let step = 1; step <= 2; step++) {
@@ -144,7 +77,6 @@ function generateFallbackLayout(
     gridExits.push({ x, y, direction: exit.direction, toRoomId: exit.to, locked: false });
   }
 
-  // Place stairs
   if (options.isStartRoom && H > 2 && W > 2) {
     const stX = Math.floor(W / 2);
     const stY = Math.min(H - 2, H - 2);
@@ -156,10 +88,9 @@ function generateFallbackLayout(
     if (cells[stY][stX] === "floor") cells[stY][stX] = "stairs_down";
   }
 
-  // Place entities on interior floor tiles
   const gridEntities: RoomLayout["entities"] = [];
   let placed = 0;
-  for (const e of entities) {
+  for (const e of visibleEntities) {
     const ex = Math.min(W - 2, 1 + (placed * 2) % Math.max(1, W - 2));
     const ey = Math.min(H - 2, 1 + Math.floor(placed / Math.max(1, W - 2)));
     if (ey > 0 && ey < H - 1 && ex > 0 && ex < W - 1 && cells[ey][ex] === "floor") {

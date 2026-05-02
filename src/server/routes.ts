@@ -11,8 +11,8 @@ import { generateLevelStyle } from "./agents/style-agent.js";
 import { designRoom, type RoomDesignOptions } from "./agents/room-designer.js";
 import { generateLevelTiles } from "./agents/tile-artist.js";
 import { narrate } from "./agents/narrator.js";
-import { getItemActions } from "./agents/item-agent.js";
 import { checkAction, advanceChain, moveRoom } from "./agents/tools.js";
+import type { RadialAction } from "../shared/types.js";
 import { generateQuests } from "./agents/quest-agent.js";
 import { agentLog } from "./services/agent-logger.js";
 import { runGameAgent } from "./agents/game-agent.js";
@@ -268,6 +268,8 @@ routes.POST["/api/game/start"] = async (req, res) => {
 
     tracer.endSpan(phase2Span.id);
 
+    state.rooms.get(startRoom.id)!.entryNarrative = narrative;
+
     // --- Phase 3: background generation — adjacent rooms first, then rest ---
     const otherRooms = level.rooms.filter((r) => r.id !== level.start_room);
     if (otherRooms.length > 0) {
@@ -351,18 +353,25 @@ routes.POST["/api/game/move"] = async (req, res) => {
         tracer.endSpan(waitSpan.id);
       }
 
-      const narSpan = tracer.startSpan("narrator", `Enter ${result.newRoom}`);
       const roomState = state.rooms.get(state.currentRoomId)!;
-      narrative = await narrate(
-        { type: "enter_room", roomId: state.currentRoomId, firstVisit: !roomState.visited },
-        getNarratorContext(state)
-      );
-      tracer.endSpan(narSpan.id, { length: narrative.length });
+      if (roomState.entryNarrative) {
+        const cacheSpan = tracer.startSpan("cache", `Reusing entry narrative for ${result.newRoom}`, undefined, `Already generated on first visit — no LLM call.`);
+        narrative = roomState.entryNarrative;
+        tracer.endSpan(cacheSpan.id);
+      } else {
+        const narSpan = tracer.startSpan("narrator", `Enter ${result.newRoom}`);
+        narrative = await narrate(
+          { type: "enter_room", roomId: state.currentRoomId, firstVisit: true },
+          getNarratorContext(state)
+        );
+        roomState.entryNarrative = narrative;
+        tracer.endSpan(narSpan.id, { length: narrative.length });
+      }
       newRoom = buildClientRoomData(state, state.currentRoomId);
     } else if (!result.moved) {
-      const narSpan = tracer.startSpan("narrator", `Blocked exit ${direction}`);
-      narrative = await narrate({ type: "exit_blocked", direction }, getNarratorContext(state));
-      tracer.endSpan(narSpan.id, { length: narrative.length });
+      const tmplSpan = tracer.startSpan("template", `Blocked exit ${direction}`, undefined, `Templated — no LLM call.`);
+      narrative = `The way ${direction} is blocked. Something must be done first.`;
+      tracer.endSpan(tmplSpan.id);
     } else if (result.completed) {
       const narSpan = tracer.startSpan("narrator", "Level complete");
       narrative = await narrate({ type: "level_complete" }, getNarratorContext(state));
@@ -391,11 +400,17 @@ routes.POST["/api/game/interact"] = async (req, res) => {
       return;
     }
 
-    const room = state.level.rooms.find((r) => r.id === state.currentRoomId)!;
-    const roomState = state.rooms.get(state.currentRoomId)!;
-
-    const span = tracer.startSpan("item-agent", `Determining actions for "${entity.name}"`, undefined, `Player pressed interact near "${entity.name}" (portable: ${entity.portable}). Item agent evaluates what actions are available (look/get/use) based on entity type, player inventory, and current puzzle state.`);
-    const actions = await getItemActions(entity, state.entities.getInventory(), room.chain, roomState.chainIndex);
+    const span = tracer.startSpan("radial-actions", `Building actions for "${entity.name}"`, undefined, `Deterministic: look always; get if portable; use if inventory non-empty.`);
+    const inventory = state.entities.getInventory();
+    const actions: RadialAction[] = [
+      { action: "look", label: "Examine", description: `Look at ${entity.name}.`, enabled: true },
+    ];
+    if (entity.portable && entity.location.type === "room") {
+      actions.push({ action: "get", label: "Pick Up", description: `Take ${entity.name}.`, enabled: true });
+    }
+    if (inventory.length > 0) {
+      actions.push({ action: "use", label: "Use Item", description: `Use an inventory item on ${entity.name}.`, enabled: true });
+    }
     tracer.endSpan(span.id, { actionCount: actions.length });
 
     json(res, 200, { actions, entityId, entityName: entity.name, trace: tracer.finish() });
@@ -432,14 +447,12 @@ routes.POST["/api/game/action"] = async (req, res) => {
 
     if (action === "look") {
       const entity = state.entities.getEntity(entityId);
-      const narSpan = tracer.startSpan("narrator", `Look at ${entity?.name}`, undefined, `Player chose "look" on "${entity?.name}". Generating a descriptive narrative of the object.`);
-      const narrative = await narrate(
-        { type: "interact", entityId, action: "look", result: entity?.description ?? "" },
-        getNarratorContext(state)
-      );
-      tracer.endSpan(narSpan.id);
+      const lookSpan = tracer.startSpan("template", `Look at ${entity?.name}`, undefined, `Templated description from entity.description — no LLM call.`);
+      const narrative = entity?.description
+        ? `You examine the ${entity.name}. ${entity.description}`
+        : `You examine the ${entity?.name ?? "object"}.`;
+      tracer.endSpan(lookSpan.id);
 
-      // Cache look results (non-state-changing)
       responseCache.set(sessionId, action, entityId, state.currentRoomId, roomState.chainIndex, inventoryIds, narrative, {});
 
       setSession(state);
@@ -479,13 +492,21 @@ routes.POST["/api/game/action"] = async (req, res) => {
       narrative = await narrate(event, getNarratorContext(state));
       tracer.endSpan(narSpan.id);
     } else {
-      // Non-advancing action — cache it
-      const narSpan = tracer.startSpan("narrator", `Non-chain interaction: ${checkResult.reason}`, undefined, `Action didn't match puzzle chain (${checkResult.reason}). Generating flavor text for a non-advancing interaction.`);
-      narrative = await narrate(
-        { type: "interact", entityId, action, result: checkResult.message },
-        getNarratorContext(state)
-      );
-      tracer.endSpan(narSpan.id);
+      // Non-advancing action — templated, no LLM
+      const tmplSpan = tracer.startSpan("template", `Non-chain interaction: ${checkResult.reason}`, undefined, `Templated flavor — no LLM call.`);
+      const entity = state.entities.getEntity(entityId);
+      const name = entity?.name ?? entityId.replace(/_/g, " ");
+      switch (checkResult.reason) {
+        case "not_revealed":
+          narrative = `You see nothing here that matches "${name}".`;
+          break;
+        case "room_complete":
+          narrative = `You ${action} the ${name}, but this room's secrets are already laid bare.`;
+          break;
+        default:
+          narrative = `You ${action} the ${name}, but nothing happens.`;
+      }
+      tracer.endSpan(tmplSpan.id);
 
       responseCache.set(sessionId, action, entityId, state.currentRoomId, roomState.chainIndex, inventoryIds, narrative, checkResult);
     }

@@ -97,7 +97,7 @@ function handleInput(): void {
     // Then check for server entities (puzzle items — need LLM)
     const entity = playerManager.getAdjacentEntity();
     if (entity) {
-      dbg(C.interact, `▶ [interact] Player pressed E near "${entity.name}" at (${entity.x},${entity.y}) — requesting actions from item-agent`);
+      dbg(C.interact, `▶ [interact] Player pressed E near "${entity.name}" at (${entity.x},${entity.y}) — requesting radial actions`);
       handleInteract(entity.id, entity.roomId);
     } else {
       dbg(C.blockedCached, `⊘ [interact] No entity nearby`);

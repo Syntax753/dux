@@ -14,6 +14,7 @@ export interface RoomState {
   scene: string;
   chainIndex: number;
   visited: boolean;
+  entryNarrative?: string;
 }
 
 export interface GameState {
